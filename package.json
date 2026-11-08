@@ -7,10 +7,10 @@
   "author": "The1TrueJoe",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/The1TrueJoe/homebridge-control4.git"
+    "url": "git+https://github.com/The1TrueJoe/homebridge-control4-local.git"
   },
   "bugs": {
-    "url": "https://github.com/The1TrueJoe/homebridge-control4/issues"
+    "url": "https://github.com/The1TrueJoe/homebridge-control4-local/issues"
   },
   "engines": {
     "node": ">=18.0.0",
@@ -44,5 +44,6 @@
     "config.schema.json",
     "LICENSE",
     "README.md"
-  ]
+  ],
+  "homepage": "https://github.com/The1TrueJoe/homebridge-control4-local#readme"
 }

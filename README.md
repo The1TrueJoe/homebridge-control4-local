@@ -1,4 +1,4 @@
-# homebridge-control4
+# homebridge-control4-local
 
 Expose a [Control4](https://www.control4.com/) system to Apple HomeKit through
 [Homebridge](https://homebridge.io/).
@@ -33,7 +33,7 @@ built against real hardware.
 1. Install [Homebridge](https://github.com/homebridge/homebridge/wiki).
 2. Install this plugin (from the Homebridge UI, search "Control4", or):
    ```
-   npm install -g homebridge-control4
+   npm install -g homebridge-control4-local
    ```
 3. Configure it in the Homebridge UI, or add a platform block to `config.json`:
    ```json
