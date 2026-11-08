@@ -114,20 +114,52 @@ export class Control4Platform implements DynamicPlatformPlugin {
     const items = await this.withAuth(() => this.director!.getAllItems());
     const exclude = new Set((this.config.excludeRooms || []).map((r) => r.toLowerCase()));
 
-    // Keep items we have a handler for, not in an excluded room.
-    const supported = items.filter((it) =>
-      it.proxy && HANDLERS[String(it.proxy)] && !exclude.has(String(it.roomName || '').toLowerCase()));
-
-    // Collapse the hardware device + its named load (same name+room): prefer light_v2.
-    const byKey = new Map<string, C4Item>();
-    for (const it of supported) {
-      const key = `${it.roomName}|${it.name}`;
-      const prev = byKey.get(key);
-      if (!prev || (it.proxy === 'light_v2' && prev.proxy === 'light')) {
-        byKey.set(key, it);
+    // Visibility: what proxies does this system actually have, and which do we not map yet?
+    const hist = new Map<string, number>();
+    for (const it of items) {
+      if (it.proxy) {
+        hist.set(String(it.proxy), (hist.get(String(it.proxy)) || 0) + 1);
       }
     }
-    const chosen = [...byKey.values()];
+    this.log.info('Control4 proxies: ' + [...hist.entries()].sort((a, b) => b[1] - a[1]).map(([p, n]) => `${p}:${n}`).join(', '));
+    const unmapped = [...hist.keys()].filter((p) => !HANDLERS[p]);
+    if (unmapped.length) {
+      this.log.info('Control4 proxies not yet mapped to HomeKit: ' + unmapped.join(', '));
+    }
+
+    // A Control4 light is a pair: a hardware wrapper (parent) + the named load (its child).
+    // Expose only the load — it carries the real name and is what you actually control.
+    const lights = items.filter((it) => it.proxy === 'light' || it.proxy === 'light_v2');
+    const lightIds = new Set(lights.map((it) => it.id));
+    const wrappers = new Set<number>();
+    for (const it of lights) {
+      const p = Number(it.parentId);
+      if (lightIds.has(p)) {
+        wrappers.add(p); // this item's parent is itself a light → the parent is a wrapper
+      }
+    }
+    const lightLoads = lights.filter((it) => !wrappers.has(it.id));
+
+    // Everything else we have a handler for (locks, …).
+    const others = items.filter((it) =>
+      it.proxy && HANDLERS[String(it.proxy)] && it.proxy !== 'light' && it.proxy !== 'light_v2');
+
+    let chosen = [...lightLoads, ...others]
+      .filter((it) => !exclude.has(String(it.roomName || '').toLowerCase()));
+
+    // Give each accessory a unique, readable name: prefer the bare load name, but when the
+    // same name occurs more than once (e.g. "Sconces" in three rooms) prefix the room.
+    const nameCounts = new Map<string, number>();
+    for (const it of chosen) {
+      const k = String(it.name).toLowerCase();
+      nameCounts.set(k, (nameCounts.get(k) || 0) + 1);
+    }
+    for (const it of chosen) {
+      const dup = (nameCounts.get(String(it.name).toLowerCase()) || 0) > 1;
+      if (dup && it.roomName) {
+        it.name = `${it.roomName} ${it.name}`;
+      }
+    }
 
     const activeUuids = new Set<string>();
     for (const it of chosen) {

@@ -2,7 +2,7 @@
 export const PLATFORM_NAME = 'Control4';
 
 /** Must match the package.json "name". */
-export const PLUGIN_NAME = 'homebridge-control4';
+export const PLUGIN_NAME = 'homebridge-control4-local';
 
 /** Control4 cloud endpoints, from the pyControl4 reference implementation. */
 export const CLOUD = {

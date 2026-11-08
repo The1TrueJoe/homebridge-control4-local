@@ -1,10 +1,10 @@
 {
-  "name": "homebridge-control4",
+  "name": "homebridge-control4-local",
   "displayName": "Control4",
   "version": "0.1.0",
   "description": "Expose a Control4 system to Apple HomeKit via Homebridge, using the controller's local Director REST API.",
   "license": "MIT",
-  "author": "",
+  "author": "The1TrueJoe",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/The1TrueJoe/homebridge-control4.git"
