@@ -14,6 +14,8 @@ export interface Control4Config extends PlatformConfig {
   controllerCommonName?: string;
   pollSeconds?: number;
   excludeRooms?: string[];
+  /** Diagnostic: on startup, toggle this device once and log the command model that works. */
+  controlTest?: string;
 }
 
 /** Control4 proxies this plugin maps, and the HomeKit handler for each. */
@@ -21,6 +23,7 @@ const HANDLERS: Record<string, new (p: Control4Platform, a: PlatformAccessory, i
   light: LightAccessory,
   light_v2: LightAccessory,
   relaysingle_doorlock_c4: LockAccessory,
+  ExtraVeg_ZWave_DoorLock: LockAccessory,
 };
 
 export class Control4Platform implements DynamicPlatformPlugin {
@@ -105,7 +108,13 @@ export class Control4Platform implements DynamicPlatformPlugin {
   }
 
   async sendCommand(id: number, command: string, params: Record<string, unknown>): Promise<void> {
-    return this.withAuth(() => this.director!.sendCommand(id, command, params));
+    this.log.info(`-> Control4 #${id}: ${command}${Object.keys(params).length ? ' ' + JSON.stringify(params) : ''}`);
+    try {
+      await this.withAuth(() => this.director!.sendCommand(id, command, params));
+    } catch (e) {
+      this.log.error(`command #${id} ${command} failed: ${(e as Error)?.message || e}`);
+      throw e;
+    }
   }
 
   // ---- Discovery & accessories -----------------------------------------------
@@ -185,6 +194,45 @@ export class Control4Platform implements DynamicPlatformPlugin {
 
     this.log.info(`Control4: exposed ${chosen.length} devices to HomeKit (from ${items.length} items).`);
     await this.poll();
+
+    if (this.config.controlTest) {
+      await this.runControlTest(String(this.config.controlTest), chosen).catch((e) => this.log.error('control test error:', e?.message || e));
+    }
+  }
+
+  /** One-shot diagnostic: toggle a light and log which command model the Director accepts. */
+  private async runControlTest(name: string, chosen: C4Item[]): Promise<void> {
+    const key = name.toLowerCase();
+    const item = chosen.find((it) => String(it.name).toLowerCase() === key);
+    if (!item) {
+      this.log.warn(`[control test] "${name}" not found. Available: ${chosen.map((c) => c.name).join(', ')}`);
+      return;
+    }
+    const vars = await this.getVariables(item.id).catch(() => []);
+    this.log.info(`[control test] "${item.name}" #${item.id} variables: ${JSON.stringify(vars.slice(0, 10))}`);
+
+    const tryCmd = async (command: string, params: Record<string, unknown>): Promise<boolean> => {
+      try {
+        await this.withAuth(() => this.director!.sendCommand(item.id, command, params));
+        this.log.info(`[control test]   OK  ${command} ${JSON.stringify(params)}`);
+        return true;
+      } catch (e) {
+        this.log.warn(`[control test]   FAIL ${command}: ${(e as Error)?.message || e}`);
+        return false;
+      }
+    };
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    this.log.info(`[control test] turning "${item.name}" OFF ...`);
+    if (!(await tryCmd('OFF', {}))) {
+      await tryCmd('SET_LEVEL', { LEVEL: 0, TIME: 0 });
+    }
+    await sleep(2500);
+    this.log.info(`[control test] turning "${item.name}" ON ...`);
+    if (!(await tryCmd('ON', {}))) {
+      await tryCmd('SET_LEVEL', { LEVEL: 100, TIME: 0 });
+    }
+    this.log.info('[control test] done — check whether the light physically responded.');
   }
 
   private async poll(): Promise<void> {

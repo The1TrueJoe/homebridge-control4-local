@@ -19,11 +19,17 @@ export abstract class C4Accessory {
     this.id = item.id;
     this.name = item.name;
 
+    // HomeKit rejects a Manufacturer/Model shorter than 2 chars, and the named light
+    // "loads" often carry an empty model, so fall back to the proxy type.
+    const manufacturer = String(item.manufacturer || '').length > 1 ? String(item.manufacturer) : 'Control4';
+    const rawModel = String(item.model || '');
+    const model = rawModel.length > 1 ? rawModel : `Control4 ${item.proxy || 'device'}`;
+
     const info = accessory.getService(platform.Service.AccessoryInformation)
       || accessory.addService(platform.Service.AccessoryInformation);
     info
-      .setCharacteristic(platform.Characteristic.Manufacturer, String(item.manufacturer ?? 'Control4'))
-      .setCharacteristic(platform.Characteristic.Model, String(item.model ?? item.proxy ?? 'Control4'))
+      .setCharacteristic(platform.Characteristic.Manufacturer, manufacturer)
+      .setCharacteristic(platform.Characteristic.Model, model)
       .setCharacteristic(platform.Characteristic.SerialNumber, `c4-${item.id}`);
   }
 
@@ -80,32 +86,38 @@ export class LightAccessory extends C4Accessory {
   }
 
   private cachedLevel = 0;
+  private cachedOn = false;
 
   async refresh(): Promise<void> {
     const vars = await this.variables();
-    const raw = this.pick(vars, ['LIGHT_LEVEL', 'LEVEL', 'Brightness', 'BRIGHTNESS', 'Light Level', 'brightness']);
-    if (raw !== undefined) {
-      const lvl = Math.max(0, Math.min(100, Math.round(Number(raw))));
+    // Control4 light_v2 reports "Brightness Percent" (0-100) and "LIGHT_STATE" (1/0);
+    // legacy "light" uses LEVEL. Read whichever is present.
+    const rawLevel = this.pick(vars, ['Brightness Percent', 'LIGHT_LEVEL', 'LEVEL', 'Light Level']);
+    const rawState = this.pick(vars, ['LIGHT_STATE', 'POWER_STATE']);
+    if (rawLevel !== undefined) {
+      const lvl = Math.max(0, Math.min(100, Math.round(Number(rawLevel))));
       this.cachedLevel = lvl;
       if (lvl > 0) {
         this.lastLevel = lvl;
       }
-      this.service.updateCharacteristic(this.platform.Characteristic.On, lvl > 0);
       if (this.isDimmer) {
         this.service.updateCharacteristic(this.platform.Characteristic.Brightness, lvl);
       }
     }
+    this.cachedOn = rawState !== undefined ? Number(rawState) > 0 : this.cachedLevel > 0;
+    this.service.updateCharacteristic(this.platform.Characteristic.On, this.cachedOn);
   }
 
   private getOn(): CharacteristicValue {
-    return this.cachedLevel > 0;
+    return this.cachedOn;
   }
 
   private async setOn(value: CharacteristicValue): Promise<void> {
     const on = value as boolean;
-    // Prefer explicit ON/OFF; fall back to a level set for relays that lack them.
+    // ON/OFF are accepted by light_v2; fall back to a level set for relays that lack them.
     await this.platform.sendCommand(this.id, on ? 'ON' : 'OFF', {})
-      .catch(() => this.platform.sendCommand(this.id, 'SET_LEVEL', { LEVEL: on ? this.lastLevel : 0 }));
+      .catch(() => this.platform.sendCommand(this.id, 'SET_LEVEL', { LEVEL: on ? this.lastLevel : 0, TIME: 0 }));
+    this.cachedOn = on;
     this.cachedLevel = on ? this.lastLevel : 0;
   }
 
