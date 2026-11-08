@@ -226,6 +226,23 @@ export class Control4Platform implements DynamicPlatformPlugin {
         .catch((e: unknown) => ({ error: (e as Error)?.message }));
       this.log.info(`[probe] ${sub}: ${JSON.stringify(data).slice(0, 1800)}`);
     }
+
+    // Hunt for the Director-provided, device-agnostic camera stream/snapshot URL.
+    const id = item.id;
+    const candidates = [
+      `/api/v1/items/${id}/snapshot`, `/api/v1/items/${id}/snapshot.jpg`,
+      `/api/v1/items/${id}/mjpeg`, `/api/v1/items/${id}/stream`,
+      `/api/v1/items/${id}/image`, `/api/v1/items/${id}/camera`,
+      `/api/v1/items/${id}/live`, `/api/v1/items/${id}/video`,
+      `/api/v1/cameras`, `/api/v1/cameras/${id}`,
+      `/api/v1/items/${id}/snapshoturl`, `/api/v1/items/${id}/streamurl`,
+    ];
+    for (const p of candidates) {
+      const r = await this.director!.probePath(p).catch((e: unknown) => ({ code: -1, type: '', len: 0, preview: (e as Error)?.message || '' }));
+      if (r.code !== 404 && r.code !== 401) {
+        this.log.info(`[probe] GET ${p} -> ${r.code} ${r.type} len=${r.len}${(r as any).location ? ' loc=' + (r as any).location : ''} ${r.preview.replace(/\s+/g, ' ')}`);
+      }
+    }
   }
 
   /** One-shot diagnostic: toggle a light and log which command model the Director accepts. */
