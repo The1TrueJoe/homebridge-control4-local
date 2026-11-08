@@ -2,8 +2,10 @@ import {
   API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic,
 } from 'homebridge';
 
+import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { Control4Account } from './control4/account';
-import { Control4Director, C4Item } from './control4/director';
+import { Control4Director, C4Item, C4Variable, UnauthorizedError } from './control4/director';
+import { C4Accessory, LightAccessory, LockAccessory } from './accessories';
 
 export interface Control4Config extends PlatformConfig {
   username?: string;
@@ -14,15 +16,24 @@ export interface Control4Config extends PlatformConfig {
   excludeRooms?: string[];
 }
 
+/** Control4 proxies this plugin maps, and the HomeKit handler for each. */
+const HANDLERS: Record<string, new (p: Control4Platform, a: PlatformAccessory, i: C4Item) => C4Accessory> = {
+  light: LightAccessory,
+  light_v2: LightAccessory,
+  relaysingle_doorlock_c4: LockAccessory,
+};
+
 export class Control4Platform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
 
-  /** Accessories restored from Homebridge's cache on launch. */
-  public readonly cachedAccessories: PlatformAccessory[] = [];
+  private readonly cached: PlatformAccessory[] = [];
+  private readonly handlers = new Map<string, C4Accessory>();
 
   public director?: Control4Director;
   private account?: Control4Account;
+  private commonName?: string;
+  private pollTimer?: NodeJS.Timeout;
 
   constructor(
     public readonly log: Logger,
@@ -30,24 +41,24 @@ export class Control4Platform implements DynamicPlatformPlugin {
     public readonly api: API,
   ) {
     if (!config.username || !config.password) {
-      this.log.error('Control4: "username" and "password" are required in config. Plugin disabled.');
+      this.log.warn('Control4: set your Control4 account email/password in the plugin settings. Waiting until then.');
       return;
     }
-
     this.api.on('didFinishLaunching', () => {
       this.start().catch((e) => this.log.error('Control4 startup failed:', e?.message || e));
     });
+    this.api.on('shutdown', () => this.pollTimer && clearInterval(this.pollTimer));
   }
 
-  /** Homebridge calls this for every accessory it restores from disk cache. */
   configureAccessory(accessory: PlatformAccessory): void {
-    this.cachedAccessories.push(accessory);
+    this.cached.push(accessory);
   }
+
+  // ---- Authentication & Director plumbing ------------------------------------
 
   private async start(): Promise<void> {
     this.account = new Control4Account(this.config.username!, this.config.password!);
 
-    // Resolve which controller, and its LAN IP.
     const controllers = await this.account.getControllers();
     if (!controllers.length) {
       throw new Error('No controllers found on this Control4 account.');
@@ -58,46 +69,95 @@ export class Control4Platform implements DynamicPlatformPlugin {
     if (!chosen) {
       throw new Error(`Controller "${this.config.controllerCommonName}" not found. Available: ${controllers.map((c) => c.commonName).join(', ')}`);
     }
-    if (controllers.length > 1 && !this.config.controllerCommonName) {
-      this.log.info(`Multiple controllers on the account; using ${chosen.commonName}. Set "controllerCommonName" to choose another: ${controllers.map((c) => c.commonName).join(', ')}`);
+    this.commonName = chosen.commonName;
+
+    if (!this.config.controllerIp) {
+      throw new Error('Set "controllerIp" to the controller\'s LAN address in the plugin settings.');
     }
 
-    const ip = this.config.controllerIp;
-    if (!ip) {
-      throw new Error('Could not determine controller IP; set "controllerIp" in config to the controller\'s LAN address.');
-    }
-
-    const dt = await this.account.getDirectorToken(chosen.commonName);
-    this.director = new Control4Director(ip, dt.token);
-    this.log.info(`Connected to Control4 director at ${ip} (${chosen.commonName}); token valid ${Math.round(dt.validSeconds / 3600)} h.`);
+    const dt = await this.account.getDirectorToken(this.commonName);
+    this.director = new Control4Director(this.config.controllerIp, dt.token);
+    this.log.info(`Connected to Control4 director ${this.commonName} at ${this.config.controllerIp}.`);
 
     await this.discover();
+
+    const period = Math.max(5, this.config.pollSeconds ?? 30) * 1000;
+    this.pollTimer = setInterval(() => this.poll().catch((e) => this.log.debug('poll error:', e?.message || e)), period);
   }
 
-  /** Pull every item and, for now, report what the system contains. */
+  /** Run a Director call; on a 401 refresh the token once and retry. */
+  private async withAuth<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof UnauthorizedError && this.account && this.commonName) {
+        this.log.info('Director token expired; refreshing.');
+        const dt = await this.account.getDirectorToken(this.commonName);
+        this.director!.setToken(dt.token);
+        return await fn();
+      }
+      throw e;
+    }
+  }
+
+  async getVariables(id: number): Promise<C4Variable[]> {
+    return this.withAuth(() => this.director!.getItemVariables(id));
+  }
+
+  async sendCommand(id: number, command: string, params: Record<string, unknown>): Promise<void> {
+    return this.withAuth(() => this.director!.sendCommand(id, command, params));
+  }
+
+  // ---- Discovery & accessories -----------------------------------------------
+
   private async discover(): Promise<void> {
-    const items = await this.director!.getAllItems();
+    const items = await this.withAuth(() => this.director!.getAllItems());
     const exclude = new Set((this.config.excludeRooms || []).map((r) => r.toLowerCase()));
 
-    const usable = items.filter((it) => !!it.proxy && !exclude.has(String(it.roomName || '').toLowerCase()));
+    // Keep items we have a handler for, not in an excluded room.
+    const supported = items.filter((it) =>
+      it.proxy && HANDLERS[String(it.proxy)] && !exclude.has(String(it.roomName || '').toLowerCase()));
 
-    // Summarise by proxy so the device model is visible in the Homebridge log.
-    const byProxy = new Map<string, number>();
-    for (const it of usable) {
-      const p = String(it.proxy);
-      byProxy.set(p, (byProxy.get(p) || 0) + 1);
+    // Collapse the hardware device + its named load (same name+room): prefer light_v2.
+    const byKey = new Map<string, C4Item>();
+    for (const it of supported) {
+      const key = `${it.roomName}|${it.name}`;
+      const prev = byKey.get(key);
+      if (!prev || (it.proxy === 'light_v2' && prev.proxy === 'light')) {
+        byKey.set(key, it);
+      }
     }
-    this.log.info(`Control4 discovery: ${items.length} items total, ${usable.length} with a proxy.`);
-    for (const [proxy, n] of [...byProxy.entries()].sort((a, b) => b[1] - a[1])) {
-      this.log.info(`  ${proxy}: ${n}`);
+    const chosen = [...byKey.values()];
+
+    const activeUuids = new Set<string>();
+    for (const it of chosen) {
+      const uuid = this.api.hap.uuid.generate(`c4:${it.id}`);
+      activeUuids.add(uuid);
+      let accessory = this.cached.find((a) => a.UUID === uuid);
+      if (!accessory) {
+        accessory = new this.api.platformAccessory(it.name, uuid);
+        accessory.context.item = it;
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      } else {
+        accessory.context.item = it;
+      }
+      const Handler = HANDLERS[String(it.proxy)];
+      this.handlers.set(uuid, new Handler(this, accessory, it));
     }
-    for (const it of usable) {
-      this.logItem(it);
+
+    // Drop accessories that no longer exist in the project.
+    const stale = this.cached.filter((a) => !activeUuids.has(a.UUID));
+    if (stale.length) {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
     }
-    // Accessory mapping is added next, once the proxy set is confirmed on real hardware.
+
+    this.log.info(`Control4: exposed ${chosen.length} devices to HomeKit (from ${items.length} items).`);
+    await this.poll();
   }
 
-  private logItem(it: C4Item): void {
-    this.log.debug(`item #${it.id} [${it.proxy}] "${it.name}" room="${it.roomName ?? '?'}" type=${it.type ?? '?'}`);
+  private async poll(): Promise<void> {
+    for (const handler of this.handlers.values()) {
+      await handler.refresh().catch((e) => this.log.debug('refresh error:', e?.message || e));
+    }
   }
 }
