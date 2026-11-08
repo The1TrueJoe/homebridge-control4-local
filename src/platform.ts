@@ -16,6 +16,8 @@ export interface Control4Config extends PlatformConfig {
   excludeRooms?: string[];
   /** Diagnostic: on startup, toggle this device once and log the command model that works. */
   controlTest?: string;
+  /** Diagnostic: dump this item's detail/variables/properties/bindings to the log. */
+  probe?: string;
 }
 
 /** Control4 proxies this plugin maps, and the HomeKit handler for each. */
@@ -197,6 +199,32 @@ export class Control4Platform implements DynamicPlatformPlugin {
 
     if (this.config.controlTest) {
       await this.runControlTest(String(this.config.controlTest), chosen).catch((e) => this.log.error('control test error:', e?.message || e));
+    }
+    if (this.config.probe) {
+      await this.probeItem(String(this.config.probe), items).catch((e) => this.log.error('probe error:', e?.message || e));
+    }
+  }
+
+  /** One-shot diagnostic: dump an item's Director data so we can see where things like
+   *  camera stream URLs live. Searches all items (not just the exposed ones). */
+  private async probeItem(name: string, items: C4Item[]): Promise<void> {
+    const key = name.toLowerCase();
+    const item = /^\d+$/.test(name)
+      ? items.find((it) => it.id === Number(name))
+      : items.find((it) => String(it.name).toLowerCase() === key
+        || `${it.roomName} ${it.name}`.toLowerCase() === key);
+    if (!item) {
+      this.log.warn(`[probe] "${name}" not found`);
+      return;
+    }
+    this.log.info(`[probe] ${item.proxy} #${item.id} "${item.name}" room="${item.roomName}"`);
+    this.log.info(`[probe] item: ${JSON.stringify(item).slice(0, 1800)}`);
+    const vars = await this.getVariables(item.id).catch(() => []);
+    this.log.info(`[probe] variables: ${JSON.stringify(vars).slice(0, 2500)}`);
+    for (const sub of ['properties', 'bindings', 'network', 'commands']) {
+      const data = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${item.id}/${sub}`))
+        .catch((e: unknown) => ({ error: (e as Error)?.message }));
+      this.log.info(`[probe] ${sub}: ${JSON.stringify(data).slice(0, 1800)}`);
     }
   }
 

@@ -93,6 +93,11 @@ export class Control4Director {
     return Array.isArray(data) ? data : [];
   }
 
+  /** Diagnostic helper: GET any Director path and return parsed JSON. */
+  async rawGet(path: string): Promise<unknown> {
+    return this.getJson(path);
+  }
+
   async getItemVariables(id: number): Promise<C4Variable[]> {
     const data = await this.getJson(`/api/v1/items/${id}/variables`);
     const arr: any[] = Array.isArray(data) ? data : [];
