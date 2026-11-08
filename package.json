@@ -1,0 +1,48 @@
+{
+  "name": "homebridge-control4",
+  "displayName": "Control4",
+  "version": "0.1.0",
+  "description": "Expose a Control4 system to Apple HomeKit via Homebridge, using the controller's local Director REST API.",
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The1TrueJoe/homebridge-control4.git"
+  },
+  "bugs": {
+    "url": "https://github.com/The1TrueJoe/homebridge-control4/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "homebridge": ">=1.6.0 || ^2.0.0-beta.0"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "rimraf ./dist && tsc",
+    "watch": "tsc --watch",
+    "lint": "eslint src --ext .ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "control4",
+    "homekit",
+    "snapone",
+    "director"
+  ],
+  "dependencies": {
+    "socket.io-client": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "homebridge": "^1.8.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.4.0"
+  },
+  "files": [
+    "dist",
+    "config.schema.json",
+    "LICENSE",
+    "README.md"
+  ]
+}

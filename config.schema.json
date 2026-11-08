@@ -1,0 +1,55 @@
+{
+  "pluginAlias": "Control4",
+  "pluginType": "platform",
+  "singular": false,
+  "headerDisplay": "Exposes your Control4 system to Apple Home. Enter your Control4 account email and password; the plugin uses them only to fetch a short-lived token and then talks to your controller locally over your LAN.",
+  "footerDisplay": "Your credentials are stored only in this Homebridge instance and are sent only to Control4's own servers.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Control4",
+        "required": true
+      },
+      "username": {
+        "title": "Control4 Account Email",
+        "type": "string",
+        "required": true,
+        "format": "email"
+      },
+      "password": {
+        "title": "Control4 Account Password",
+        "type": "string",
+        "required": true,
+        "x-schema-form": { "type": "password" }
+      },
+      "controllerIp": {
+        "title": "Controller IP Address",
+        "type": "string",
+        "format": "ipv4",
+        "description": "The controller's LAN IP. Leave blank to discover it from your account."
+      },
+      "controllerCommonName": {
+        "title": "Controller Common Name",
+        "type": "string",
+        "description": "Only needed if your account has more than one controller, e.g. Living-EA1-000FFF1AFCA9."
+      },
+      "pollSeconds": {
+        "title": "Poll Interval (seconds)",
+        "type": "integer",
+        "default": 30,
+        "minimum": 5,
+        "description": "Fallback refresh rate. Live updates arrive over the controller's event stream; this just backstops it."
+      },
+      "excludeRooms": {
+        "title": "Exclude Rooms",
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Rooms whose devices should not be exposed to HomeKit."
+      }
+    },
+    "required": ["name", "username", "password"]
+  }
+}
