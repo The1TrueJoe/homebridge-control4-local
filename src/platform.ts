@@ -26,6 +26,9 @@ export interface Control4Config extends PlatformConfig {
   exposeCameras?: boolean;
   /** HomeKit Secure Video: motion-triggered recording on the cameras (default true; needs iCloud+). */
   secureVideo?: boolean;
+  /** Keep a continuous prebuffer so clips include seconds before the trigger (default false =
+   *  on-demand, lighter on memory; true adds one persistent ffmpeg per camera). */
+  cameraPrebuffer?: boolean;
   /** Minutes between automatic re-discoveries, so adds/removes/renames sync live (default 10). */
   rediscoverMinutes?: number;
   /** Add a HomeKit volume-slider tile per room with a TV (default true). */
@@ -454,7 +457,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
         attachCameraController(this.api, accessory, delegate);
       } else {
         // HomeKit Secure Video: add motion-triggered recording alongside live streaming.
-        const recording = new C4RecordingDelegate({ hap: this.api.hap, log: this.log, displayName: cam.name, resolved, prebuffer: true });
+        const recording = new C4RecordingDelegate({ hap: this.api.hap, log: this.log, displayName: cam.name, resolved, prebuffer: this.config.cameraPrebuffer === true });
         const options = {
           ...delegate.buildControllerOptions(),
           recording: { options: recording.buildRecordingOptions(), delegate: recording },

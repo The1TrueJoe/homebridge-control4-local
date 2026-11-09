@@ -74,6 +74,12 @@
         "default": true,
         "description": "Motion-triggered recording on the cameras (requires iCloud+ with HomeKit Secure Video and a home hub)."
       },
+      "cameraPrebuffer": {
+        "title": "Camera Prebuffer",
+        "type": "boolean",
+        "default": false,
+        "description": "Keep a continuous prebuffer so recordings include a few seconds before the motion trigger. Off (default) is lighter on memory; on adds one persistent ffmpeg per camera."
+      },
       "volumeSliders": {
         "title": "Volume Slider Tiles",
         "type": "boolean",
