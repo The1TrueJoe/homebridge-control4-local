@@ -18,6 +18,8 @@ export interface Control4Config extends PlatformConfig {
   controlTest?: string;
   /** Diagnostic: dump this item's detail/variables/properties/bindings to the log. */
   probe?: string;
+  /** Diagnostic: log each room's Control4 video/audio sources (for TV mapping). */
+  surveyRooms?: boolean;
 }
 
 /** Control4 proxies this plugin maps, and the HomeKit handler for each. */
@@ -203,6 +205,35 @@ export class Control4Platform implements DynamicPlatformPlugin {
     if (this.config.probe) {
       await this.probeItem(String(this.config.probe), items).catch((e) => this.log.error('probe error:', e?.message || e));
     }
+    if (this.config.surveyRooms) {
+      for (const r of items.filter((it) => it.proxy === 'roomdevice')) {
+        const rid = (r as { roomId?: number }).roomId ?? r.id;
+        const grab = async (kind: string): Promise<string[]> => {
+          const d = await this.withAuth(() => this.director!.rawGet(`/api/v1/locations/rooms/${rid}/${kind}`)).catch(() => ({}));
+          const vis = (d as { visible?: Array<{ id: number; name: string }> }).visible || [];
+          return vis.map((x) => `${x.id}:${x.name}`);
+        };
+        const video = await grab('video_devices');
+        const audio = await grab('audio_devices');
+        if (video.length || audio.length) {
+          this.log.info(`[survey] ${r.roomName} (room ${rid}): video=[${video.join(' | ')}] audio=[${audio.join(' | ')}]`);
+        }
+      }
+      // AV devices + a sample TV's command/connection model (room-source lists were empty).
+      const avProxies = new Set(['tv', 'receiver', 'avswitch', 'amplifier', 'tuner', 'dvd', 'media_player']);
+      const av = items.filter((it) => avProxies.has(String(it.proxy)));
+      for (const d of av.slice(0, 30)) {
+        this.log.info(`[survey] AV ${d.proxy} #${d.id} "${d.name}" room="${d.roomName}"`);
+      }
+      const firstTv = items.find((it) => it.proxy === 'tv');
+      if (firstTv) {
+        const cmds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${firstTv.id}/commands`)).catch(() => []);
+        this.log.info(`[survey] TV #${firstTv.id} "${firstTv.name}" commands: ${JSON.stringify(cmds).slice(0, 2600)}`);
+        const binds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${firstTv.id}/bindings`)).catch(() => []);
+        this.log.info(`[survey] TV #${firstTv.id} bindings: ${JSON.stringify(binds).slice(0, 2000)}`);
+      }
+      this.log.info('[survey] done');
+    }
   }
 
   /** One-shot diagnostic: dump an item's Director data so we can see where things like
@@ -225,6 +256,25 @@ export class Control4Platform implements DynamicPlatformPlugin {
       const data = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${item.id}/${sub}`))
         .catch((e: unknown) => ({ error: (e as Error)?.message }));
       this.log.info(`[probe] ${sub}: ${JSON.stringify(data).slice(0, 1800)}`);
+    }
+
+    // For a room, find the source list + select command that drive HomeKit TV inputs.
+    if (item.proxy === 'roomdevice') {
+      const rid = (item as { roomId?: number }).roomId ?? item.id;
+      const roomPaths = [
+        `/api/v1/locations/rooms/${rid}`,
+        `/api/v1/locations/rooms/${rid}/devices`,
+        `/api/v1/locations/rooms/${rid}/sources`,
+        `/api/v1/locations/rooms/${rid}/video_devices`,
+        `/api/v1/locations/rooms/${rid}/audio_devices`,
+        `/api/v1/locations/rooms/${rid}/deviceswithcapability`,
+      ];
+      for (const p of roomPaths) {
+        const data = await this.withAuth(() => this.director!.rawGet(p)).catch((e: unknown) => ({ error: (e as Error)?.message }));
+        this.log.info(`[probe] ${p}: ${JSON.stringify(data).slice(0, 1400)}`);
+      }
+      const cmds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${item.id}/commands`)).catch(() => []);
+      this.log.info(`[probe] FULL commands: ${JSON.stringify(cmds).slice(0, 4500)}`);
     }
 
     // Hunt for the Director-provided, device-agnostic camera stream/snapshot URL.
