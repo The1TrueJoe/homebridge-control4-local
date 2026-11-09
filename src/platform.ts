@@ -293,6 +293,15 @@ export class Control4Platform implements DynamicPlatformPlugin {
         this.log.info(`[probe] GET ${p} -> ${r.code} ${r.type} len=${r.len}${(r as any).location ? ' loc=' + (r as any).location : ''} ${r.preview.replace(/\s+/g, ' ')}`);
       }
     }
+
+    // Token-only synchronous proxy commands: the reply may carry the stream/snapshot URL.
+    if (item.proxy === 'camera' || item.proxy === 'camera_v2') {
+      for (const cmd of ['GET_SETUP', 'GET_STREAM_URL', 'GET_SNAPSHOT_URL', 'GET_MJPEG_URL', 'GET_H264_URL', 'GET_URLS', 'GET_CAMERA_INFO', 'GET_PROPERTIES']) {
+        const r = await this.withAuth(() => this.director!.sendCommandSync(id, cmd, {})).catch((e: unknown) => ({ error: (e as Error)?.message }));
+        const s = typeof r === 'string' ? r : JSON.stringify(r);
+        this.log.info(`[probe] SYNC ${cmd} -> ${(s || '').slice(0, 2600)}`);
+      }
+    }
   }
 
   /** One-shot diagnostic: toggle a light and log which command model the Director accepts. */

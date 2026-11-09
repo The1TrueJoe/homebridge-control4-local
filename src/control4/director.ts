@@ -144,6 +144,25 @@ export class Control4Director {
       tParams: params,
     });
   }
+
+  /** Synchronous command (async:false) that returns the proxy's reply body — the
+   *  bearer-token equivalent of c4soap SendToDevice, used to ask a proxy for data
+   *  such as a camera's stream/snapshot URL. */
+  async sendCommandSync(id: number, command: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    const text = await this.request('POST', `/api/v1/items/${id}/commands`, {
+      async: false,
+      command,
+      tParams: params,
+    });
+    if (!text) {
+      return null;
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
 }
 
 /** Thrown when Director rejects the bearer token, so callers can refresh and retry. */
