@@ -315,6 +315,23 @@ export class Control4Platform implements DynamicPlatformPlugin {
           .filter((it) => srcProxies.has(String(it.proxy)) && roomIdOf(it) === rid && it.id !== room.id)
           .map((it) => ({ id: it.id, name: it.name }));
       }
+
+      // If the room is linked to an on-screen navigator (OSD), expose "Control4" as a source.
+      let hasOsd = false;
+      const binds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${room.id}/bindings`)).catch(() => []);
+      const osd = (Array.isArray(binds) ? binds : []).find((b) =>
+        (b as { bindingClass?: string }).bindingClass === 'ONSCREEN_SELECTION'
+        && Array.isArray((b as { connections?: unknown[] }).connections)
+        && (b as { connections: unknown[] }).connections.length > 0);
+      if (osd) {
+        const conn = (osd as { connections: Array<{ id?: number }> }).connections[0];
+        const navId = Number(conn?.id);
+        if (navId && !inputs.some((i) => i.id === navId)) {
+          inputs.unshift({ id: navId, name: 'Control4' });
+          hasOsd = true;
+        }
+      }
+
       if (!inputs.length) {
         inputs = [{ id: 0, name: 'Control4' }]; // placeholder so HomeKit accepts the accessory
       }
@@ -325,7 +342,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
       this.televisions.push(new RoomTelevision(this, accessory, room, inputs));
       this.tvByRoom.set(rid, accessory);
       toPublish.push(accessory);
-      this.log.info(`Control4: room TV "${room.name}" with ${inputs.length} input(s).`);
+      this.log.info(`Control4: room TV "${room.name}" with ${inputs.length} input(s)${hasOsd ? ' (incl. Control4 OSD)' : ''}.`);
     }
 
     // Remove TVs whose room no longer has one (best-effort; externals fully clear on restart).
