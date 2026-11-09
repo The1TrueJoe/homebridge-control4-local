@@ -11,6 +11,7 @@ import { resolveCamera } from './cameraResolver';
 import { C4CameraDelegate, attachCameraController } from './camera';
 import { C4RecordingDelegate } from './cameraRecording';
 import { SceneSwitch } from './scenes';
+import { MotionSensorAccessory, normName } from './sensors';
 
 export interface Control4Config extends PlatformConfig {
   username?: string;
@@ -34,6 +35,8 @@ export interface Control4Config extends PlatformConfig {
   volumeSliders?: boolean;
   /** Expose Control4 Advanced Lighting scenes as HomeKit switches (default true). */
   exposeScenes?: boolean;
+  /** Expose Control4 contact/motion sensors as HomeKit motion sensors (default true). */
+  exposeSensors?: boolean;
   /** Milliseconds for smooth dimming ramps (default 1000; 0 = instant). */
   dimRampMs?: number;
 }
@@ -55,6 +58,8 @@ export class Control4Platform implements DynamicPlatformPlugin {
   private readonly televisions: RoomTelevision[] = [];
   private readonly volumeHandlers: RoomVolume[] = [];
   private readonly sceneHandlers: SceneSwitch[] = [];
+  private readonly sensorHandlers: MotionSensorAccessory[] = [];
+  private readonly cameraMotionByName = new Map<string, Service>();
   private advLightingAgentId?: number;
   private readonly cameraUuidsWithController = new Set<string>();
   private readonly tvByRoom = new Map<number, PlatformAccessory>();
@@ -234,6 +239,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
 
     await this.discoverCameras(items, activeUuids);
+    await this.discoverSensors(items, activeUuids);
     await this.discoverTelevisions(items, activeUuids);
     await this.discoverScenes(items, activeUuids);
 
@@ -371,6 +377,37 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
   }
 
+  /** Expose Control4 contact/motion sensors as HomeKit motion sensors, and link any whose name
+   *  matches a camera to that camera's HomeKit Secure Video motion trigger. */
+  private async discoverSensors(items: C4Item[], activeUuids: Set<string>): Promise<void> {
+    if (this.config.exposeSensors === false) {
+      return;
+    }
+    const sensorProxies = new Set(['contactsingle', 'motionsensor', 'contactsingle_contactsensor']);
+    const sensors = items.filter((it) => it.proxy && sensorProxies.has(String(it.proxy)));
+    for (const it of sensors) {
+      const uuid = this.api.hap.uuid.generate(`c4:sensor:${it.id}`);
+      activeUuids.add(uuid);
+      let acc = this.cached.find((a) => a.UUID === uuid);
+      if (!acc) {
+        acc = new this.api.platformAccessory(it.name, uuid);
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
+        this.cached.push(acc);
+      } else {
+        acc.displayName = it.name;
+      }
+      let handler = this.sensorHandlers.find((h) => h.accessory.UUID === uuid);
+      if (!handler) {
+        handler = new MotionSensorAccessory(this, acc, it);
+        this.sensorHandlers.push(handler);
+      }
+      handler.linkedCameraMotion = this.cameraMotionByName.get(normName(it.name));
+    }
+    if (sensors.length) {
+      this.log.info(`Control4: ${sensors.length} motion/contact sensor(s).`);
+    }
+  }
+
   /** Expose Control4 Advanced Lighting scenes as HomeKit switches. */
   private async discoverScenes(items: C4Item[], activeUuids: Set<string>): Promise<void> {
     if (this.config.exposeScenes === false) {
@@ -466,8 +503,12 @@ export class Control4Platform implements DynamicPlatformPlugin {
         delegate.controller = controller;
         (recording as unknown as { controller: unknown }).controller = controller;
         accessory.configureController(controller);
-        // Motion trigger is driven by a linked Control4 motion sensor (see linkCameraMotion),
+        // Motion trigger is driven by a Control4 motion sensor of the same name (discoverSensors),
         // so the plugin stays device-agnostic — no DVR/vendor-specific code here.
+        const motionService = (controller as unknown as { motionService?: Service }).motionService;
+        if (motionService) {
+          this.cameraMotionByName.set(normName(cam.name), motionService);
+        }
       }
       this.cameraUuidsWithController.add(uuid);
       if (!existing) {
@@ -487,6 +528,9 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
     for (const vol of this.volumeHandlers) {
       await vol.refresh().catch((e) => this.log.debug('volume refresh error:', e?.message || e));
+    }
+    for (const s of this.sensorHandlers) {
+      await s.refresh().catch((e) => this.log.debug('sensor refresh error:', e?.message || e));
     }
     if (this.advLightingAgentId !== undefined && this.sceneHandlers.length) {
       const scenes = await this.withAuth(() => this.director!.rawGet('/api/v1/agents/advanced_lighting')).catch(() => []);

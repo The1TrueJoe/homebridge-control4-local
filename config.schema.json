@@ -92,6 +92,12 @@
         "default": true,
         "description": "Expose Control4 Advanced Lighting scenes as HomeKit switches."
       },
+      "exposeSensors": {
+        "title": "Expose Motion/Contact Sensors",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose Control4 contact/motion sensors as HomeKit motion sensors. A sensor named the same as a camera also triggers that camera's HomeKit Secure Video recording."
+      },
       "dimRampMs": {
         "title": "Dimming Ramp (ms)",
         "type": "integer",
