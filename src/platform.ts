@@ -6,6 +6,7 @@ import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { Control4Account } from './control4/account';
 import { Control4Director, C4Item, C4Variable, UnauthorizedError } from './control4/director';
 import { C4Accessory, LightAccessory, LockAccessory } from './accessories';
+import { RoomTelevision, RoomSource } from './television';
 
 export interface Control4Config extends PlatformConfig {
   username?: string;
@@ -14,6 +15,8 @@ export interface Control4Config extends PlatformConfig {
   controllerCommonName?: string;
   pollSeconds?: number;
   excludeRooms?: string[];
+  /** Expose each room that has a TV as a HomeKit Television (default true). */
+  exposeTvs?: boolean;
   /** Diagnostic: on startup, toggle this device once and log the command model that works. */
   controlTest?: string;
   /** Diagnostic: dump this item's detail/variables/properties/bindings to the log. */
@@ -36,6 +39,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
 
   private readonly cached: PlatformAccessory[] = [];
   private readonly handlers = new Map<string, C4Accessory>();
+  private readonly televisions: RoomTelevision[] = [];
 
   public director?: Control4Director;
   private account?: Control4Account;
@@ -197,6 +201,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
 
     this.log.info(`Control4: exposed ${chosen.length} devices to HomeKit (from ${items.length} items).`);
+    await this.discoverTelevisions(items);
     await this.poll();
 
     if (this.config.controlTest) {
@@ -233,6 +238,35 @@ export class Control4Platform implements DynamicPlatformPlugin {
         this.log.info(`[survey] TV #${firstTv.id} bindings: ${JSON.stringify(binds).slice(0, 2000)}`);
       }
       this.log.info('[survey] done');
+    }
+  }
+
+  /** Expose each room that has a TV as a HomeKit Television (external accessory). The ROOM
+   *  holds the state (power/input/volume), so this works for IR- and IP-controlled TVs alike. */
+  private async discoverTelevisions(items: C4Item[]): Promise<void> {
+    if (this.config.exposeTvs === false) {
+      return;
+    }
+    const roomIdOf = (it: C4Item) => Number((it as { roomId?: number }).roomId ?? 0);
+    const tvRoomIds = new Set(items.filter((it) => it.proxy === 'tv').map(roomIdOf).filter(Boolean));
+    const rooms = items.filter((it) => it.proxy === 'roomdevice' && tvRoomIds.has(roomIdOf(it)));
+
+    const toPublish: PlatformAccessory[] = [];
+    for (const room of rooms) {
+      const rid = roomIdOf(room) || room.id;
+      const vd = await this.withAuth(() => this.director!.rawGet(`/api/v1/locations/rooms/${rid}/video_devices`)).catch(() => ({}));
+      const vis = (vd as { visible?: Array<{ id: number; name: string }> }).visible || [];
+      const inputs: RoomSource[] = vis.map((x) => ({ id: x.id, name: x.name }));
+
+      const uuid = this.api.hap.uuid.generate(`c4:room-tv:${room.id}`);
+      const accessory = new this.api.platformAccessory(room.name, uuid);
+      accessory.category = this.api.hap.Categories.TELEVISION;
+      this.televisions.push(new RoomTelevision(this, accessory, room, inputs));
+      toPublish.push(accessory);
+      this.log.info(`Control4: room TV "${room.name}" with ${inputs.length} input(s).`);
+    }
+    if (toPublish.length) {
+      this.api.publishExternalAccessories(PLUGIN_NAME, toPublish);
     }
   }
 
@@ -342,6 +376,9 @@ export class Control4Platform implements DynamicPlatformPlugin {
   private async poll(): Promise<void> {
     for (const handler of this.handlers.values()) {
       await handler.refresh().catch((e) => this.log.debug('refresh error:', e?.message || e));
+    }
+    for (const tv of this.televisions) {
+      await tv.refresh().catch((e) => this.log.debug('tv refresh error:', e?.message || e));
     }
   }
 }
