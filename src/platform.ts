@@ -9,6 +9,8 @@ import { C4Accessory, LightAccessory, LockAccessory } from './accessories';
 import { RoomTelevision, RoomVolume, RoomSource } from './television';
 import { resolveCamera } from './cameraResolver';
 import { C4CameraDelegate, attachCameraController } from './camera';
+import { C4RecordingDelegate } from './cameraRecording';
+import { attachMotionDetector } from './cameraMotion';
 import { SceneSwitch } from './scenes';
 
 export interface Control4Config extends PlatformConfig {
@@ -22,6 +24,8 @@ export interface Control4Config extends PlatformConfig {
   exposeTvs?: boolean;
   /** Expose Control4 cameras as HomeKit cameras (default true). */
   exposeCameras?: boolean;
+  /** HomeKit Secure Video: motion-triggered recording on the cameras (default true; needs iCloud+). */
+  secureVideo?: boolean;
   /** Minutes between automatic re-discoveries, so adds/removes/renames sync live (default 10). */
   rediscoverMinutes?: number;
   /** Add a HomeKit volume-slider tile per room with a TV (default true). */
@@ -486,7 +490,24 @@ export class Control4Platform implements DynamicPlatformPlugin {
         .setCharacteristic(this.Characteristic.SerialNumber, `c4-cam-${cam.id}`);
 
       const delegate = new C4CameraDelegate({ hap: this.api.hap, log: this.log, displayName: cam.name, resolved });
-      attachCameraController(this.api, accessory, delegate);
+      if (this.config.secureVideo === false) {
+        attachCameraController(this.api, accessory, delegate);
+      } else {
+        // HomeKit Secure Video: add motion-triggered recording alongside live streaming.
+        const recording = new C4RecordingDelegate({ hap: this.api.hap, log: this.log, displayName: cam.name, resolved, prebuffer: true });
+        const options = {
+          ...delegate.buildControllerOptions(),
+          recording: { options: recording.buildRecordingOptions(), delegate: recording },
+          sensors: { motion: true },
+        };
+        const controller = new this.api.hap.CameraController(options);
+        delegate.controller = controller;
+        (recording as unknown as { controller: unknown }).controller = controller;
+        accessory.configureController(controller);
+        attachMotionDetector(this.api.hap, controller, {
+          displayName: cam.name, resolved, log: this.log, threshold: 0.1, cooldownMs: 5000, sampleFps: 3, scaleWidth: 320,
+        });
+      }
       this.cameraUuidsWithController.add(uuid);
       if (!existing) {
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
