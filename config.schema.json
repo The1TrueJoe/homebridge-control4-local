@@ -48,6 +48,25 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "Rooms whose devices should not be exposed to HomeKit."
+      },
+      "rediscoverMinutes": {
+        "title": "Re-discover Interval (minutes)",
+        "type": "integer",
+        "default": 10,
+        "minimum": 1,
+        "description": "How often to re-read the project so devices added/removed/renamed in Control4 sync to HomeKit without a restart."
+      },
+      "exposeTvs": {
+        "title": "Expose Rooms as TVs",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose each room that has a TV as a HomeKit Television (power/input/volume)."
+      },
+      "exposeCameras": {
+        "title": "Expose Cameras",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose Control4 cameras as HomeKit cameras."
       }
     },
     "required": ["name", "username", "password"]
