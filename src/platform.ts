@@ -9,6 +9,7 @@ import { C4Accessory, LightAccessory, LockAccessory } from './accessories';
 import { RoomTelevision, RoomVolume, RoomSource } from './television';
 import { resolveCamera } from './cameraResolver';
 import { C4CameraDelegate, attachCameraController } from './camera';
+import { SceneSwitch } from './scenes';
 
 export interface Control4Config extends PlatformConfig {
   username?: string;
@@ -25,6 +26,8 @@ export interface Control4Config extends PlatformConfig {
   rediscoverMinutes?: number;
   /** Add a HomeKit volume-slider tile per room with a TV (default true). */
   volumeSliders?: boolean;
+  /** Expose Control4 Advanced Lighting scenes as HomeKit switches (default true). */
+  exposeScenes?: boolean;
   /** Diagnostic: on startup, toggle this device once and log the command model that works. */
   controlTest?: string;
   /** Diagnostic: dump this item's detail/variables/properties/bindings to the log. */
@@ -49,6 +52,8 @@ export class Control4Platform implements DynamicPlatformPlugin {
   private readonly handlers = new Map<string, C4Accessory>();
   private readonly televisions: RoomTelevision[] = [];
   private readonly volumeHandlers: RoomVolume[] = [];
+  private readonly sceneHandlers: SceneSwitch[] = [];
+  private advLightingAgentId?: number;
   private readonly cameraUuidsWithController = new Set<string>();
   private readonly tvByRoom = new Map<number, PlatformAccessory>();
   private firstSync = true;
@@ -228,6 +233,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
 
     await this.discoverCameras(items, activeUuids);
     await this.discoverTelevisions(items, activeUuids);
+    await this.discoverScenes(items, activeUuids);
 
     // Drop bridged accessories that no longer exist in the project (deleted in Control4).
     const stale = this.cached.filter((a) => !activeUuids.has(a.UUID));
@@ -399,6 +405,40 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
   }
 
+  /** Expose Control4 Advanced Lighting scenes as HomeKit switches. */
+  private async discoverScenes(items: C4Item[], activeUuids: Set<string>): Promise<void> {
+    if (this.config.exposeScenes === false) {
+      return;
+    }
+    const agent = items.find((it) => it.proxy === 'control4_agent_adv_lighting');
+    if (!agent) {
+      return;
+    }
+    this.advLightingAgentId = agent.id;
+    const scenes = await this.withAuth(() => this.director!.rawGet('/api/v1/agents/advanced_lighting')).catch(() => []);
+    for (const sc of (Array.isArray(scenes) ? scenes : []) as Array<{ scene_id?: number; name?: string }>) {
+      const sceneId = Number(sc.scene_id);
+      if (!Number.isFinite(sceneId)) {
+        continue;
+      }
+      const name = String(sc.name || `Scene ${sceneId}`);
+      const uuid = this.api.hap.uuid.generate(`c4:scene:${sceneId}`);
+      activeUuids.add(uuid);
+      let acc = this.cached.find((a) => a.UUID === uuid);
+      if (!acc) {
+        acc = new this.api.platformAccessory(name, uuid);
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [acc]);
+        this.cached.push(acc);
+      } else {
+        acc.displayName = name;
+      }
+      if (!this.sceneHandlers.some((h) => h.accessory.UUID === uuid)) {
+        this.sceneHandlers.push(new SceneSwitch(this, acc, agent.id, sceneId, name));
+      }
+    }
+    this.log.info(`Control4: ${this.sceneHandlers.length} lighting scene(s).`);
+  }
+
   /** Expose Control4 cameras as HomeKit cameras. Stream/snapshot URLs are resolved
    *  token-only (GET_PROPERTIES → DVR address/creds); no DVR login needed. */
   private async discoverCameras(items: C4Item[], activeUuids: Set<string>): Promise<void> {
@@ -517,6 +557,15 @@ export class Control4Platform implements DynamicPlatformPlugin {
     // One-time: the Navigator's per-room source configuration (for TV input filtering).
     const uic = await this.withAuth(() => this.director!.rawGet('/api/v1/agents/ui_configuration')).catch((e: unknown) => ({ error: (e as Error)?.message }));
     this.log.info(`[probe] ui_configuration: ${JSON.stringify(uic).slice(0, 2200)}`);
+    for (const ag of ['advanced_lighting', 'zwave_scenes']) {
+      const d = await this.withAuth(() => this.director!.rawGet(`/api/v1/agents/${ag}`)).catch((e: unknown) => ({ error: (e as Error)?.message }));
+      this.log.info(`[probe] agent ${ag}: ${JSON.stringify(d).slice(0, 1900)}`);
+    }
+    const alAgent = items.find((it) => it.proxy === 'control4_agent_adv_lighting');
+    if (alAgent) {
+      const cmds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${alAgent.id}/commands`)).catch(() => []);
+      this.log.info(`[probe] adv_lighting agent #${alAgent.id} commands: ${JSON.stringify(cmds).slice(0, 2200)}`);
+    }
 
     // Token-only synchronous proxy commands: the reply may carry the stream/snapshot URL.
     if (item.proxy === 'camera' || item.proxy === 'camera_v2') {
@@ -572,6 +621,19 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
     for (const vol of this.volumeHandlers) {
       await vol.refresh().catch((e) => this.log.debug('volume refresh error:', e?.message || e));
+    }
+    if (this.advLightingAgentId !== undefined && this.sceneHandlers.length) {
+      const scenes = await this.withAuth(() => this.director!.rawGet('/api/v1/agents/advanced_lighting')).catch(() => []);
+      const active = new Map<number, boolean>();
+      for (const s of (Array.isArray(scenes) ? scenes : []) as Array<{ scene_id?: number; is_active?: boolean }>) {
+        active.set(Number(s.scene_id), !!s.is_active);
+      }
+      for (const h of this.sceneHandlers) {
+        const a = active.get(h.sceneId);
+        if (a !== undefined) {
+          h.update(a);
+        }
+      }
     }
   }
 }
