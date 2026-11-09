@@ -98,32 +98,6 @@ export class Control4Director {
     return this.getJson(path);
   }
 
-  /** Diagnostic: GET a path and report status/content-type/preview without throwing,
-   *  so we can tell an image/stream endpoint from a 404 (used to locate camera URLs). */
-  probePath(path: string): Promise<{ code: number; type: string; len: number; preview: string; location?: string }> {
-    const options: https.RequestOptions = {
-      host: this.ip, port: 443, path, method: 'GET', agent: this.agent,
-      headers: { 'Authorization': `Bearer ${this.token}` }, timeout: 8000,
-    };
-    return new Promise((resolve, reject) => {
-      const req = https.request(options, (res) => {
-        const chunks: Buffer[] = [];
-        let len = 0;
-        res.on('data', (c) => { len += c.length; if (chunks.length < 3) chunks.push(c); });
-        res.on('end', () => resolve({
-          code: res.statusCode || 0,
-          type: String(res.headers['content-type'] || ''),
-          len,
-          location: res.headers.location ? String(res.headers.location) : undefined,
-          preview: Buffer.concat(chunks).toString('utf8').slice(0, 220),
-        }));
-      });
-      req.on('error', reject);
-      req.on('timeout', () => req.destroy(new Error('timeout')));
-      req.end();
-    });
-  }
-
   async getItemVariables(id: number): Promise<C4Variable[]> {
     const data = await this.getJson(`/api/v1/items/${id}/variables`);
     const arr: any[] = Array.isArray(data) ? data : [];

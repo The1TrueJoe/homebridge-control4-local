@@ -8,11 +8,22 @@ token, then talks to your controller **locally over your LAN** via its Director
 REST API (`https://<controller>/api/v1/...`). No cloud round-trip is needed for
 day-to-day control, and nothing is installed on the controller itself.
 
-## Status
+## Features
 
-Early development. Current milestone: authentication and device discovery.
-HomeKit accessory mapping (lights, outlets, thermostats, fans, blinds) is being
-built against real hardware.
+- **Lights** — dimmers and switches; dimmable lights fade smoothly (configurable ramp).
+- **Color temperature + Adaptive Lighting** — on lights that report CCT support (e.g. Hue).
+- **Locks** — Control4 door locks as HomeKit locks.
+- **Cameras** — live streaming plus **HomeKit Secure Video** (motion-triggered recording).
+  Stream details are resolved from the Director over the token — no DVR login needed.
+- **Rooms as Televisions** — power / volume / mute / input from the room's own Control4 state,
+  so it works for IR- and IP-controlled TVs alike. Inputs are exactly the sources the
+  Navigator shows for that room (plus "Control4" where the room has an on-screen navigator).
+- **Volume tiles** — a volume slider per room with a TV.
+- **Lighting scenes** — Control4 Advanced Lighting scenes as HomeKit switches.
+- **Live sync** — devices added / removed / renamed in Control4 appear in HomeKit
+  automatically (periodic re-discovery), no restart needed.
+
+Tested against Control4 OS 3.x.
 
 ## How it works
 

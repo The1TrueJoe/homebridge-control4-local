@@ -32,12 +32,8 @@ export interface Control4Config extends PlatformConfig {
   volumeSliders?: boolean;
   /** Expose Control4 Advanced Lighting scenes as HomeKit switches (default true). */
   exposeScenes?: boolean;
-  /** Diagnostic: on startup, toggle this device once and log the command model that works. */
-  controlTest?: string;
-  /** Diagnostic: dump this item's detail/variables/properties/bindings to the log. */
-  probe?: string;
-  /** Diagnostic: log each room's Control4 video/audio sources (for TV mapping). */
-  surveyRooms?: boolean;
+  /** Milliseconds for smooth dimming ramps (default 1000; 0 = instant). */
+  dimRampMs?: number;
 }
 
 /** Control4 proxies this plugin maps, and the HomeKit handler for each. */
@@ -255,42 +251,6 @@ export class Control4Platform implements DynamicPlatformPlugin {
 
     this.log.info(`Control4: ${chosen.length} bridged device(s) (from ${items.length} items).`);
     await this.poll();
-
-    if (this.firstSync && this.config.controlTest) {
-      await this.runControlTest(String(this.config.controlTest), chosen).catch((e) => this.log.error('control test error:', e?.message || e));
-    }
-    if (this.firstSync && this.config.probe) {
-      await this.probeItem(String(this.config.probe), items).catch((e) => this.log.error('probe error:', e?.message || e));
-    }
-    if (this.firstSync && this.config.surveyRooms) {
-      for (const r of items.filter((it) => it.proxy === 'roomdevice')) {
-        const rid = (r as { roomId?: number }).roomId ?? r.id;
-        const grab = async (kind: string): Promise<string[]> => {
-          const d = await this.withAuth(() => this.director!.rawGet(`/api/v1/locations/rooms/${rid}/${kind}`)).catch(() => ({}));
-          const vis = (d as { visible?: Array<{ id: number; name: string }> }).visible || [];
-          return vis.map((x) => `${x.id}:${x.name}`);
-        };
-        const video = await grab('video_devices');
-        const audio = await grab('audio_devices');
-        if (video.length || audio.length) {
-          this.log.info(`[survey] ${r.roomName} (room ${rid}): video=[${video.join(' | ')}] audio=[${audio.join(' | ')}]`);
-        }
-      }
-      // AV devices + a sample TV's command/connection model (room-source lists were empty).
-      const avProxies = new Set(['tv', 'receiver', 'avswitch', 'amplifier', 'tuner', 'dvd', 'media_player']);
-      const av = items.filter((it) => avProxies.has(String(it.proxy)));
-      for (const d of av.slice(0, 30)) {
-        this.log.info(`[survey] AV ${d.proxy} #${d.id} "${d.name}" room="${d.roomName}"`);
-      }
-      const firstTv = items.find((it) => it.proxy === 'tv');
-      if (firstTv) {
-        const cmds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${firstTv.id}/commands`)).catch(() => []);
-        this.log.info(`[survey] TV #${firstTv.id} "${firstTv.name}" commands: ${JSON.stringify(cmds).slice(0, 2600)}`);
-        const binds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${firstTv.id}/bindings`)).catch(() => []);
-        this.log.info(`[survey] TV #${firstTv.id} bindings: ${JSON.stringify(binds).slice(0, 2000)}`);
-      }
-      this.log.info('[survey] done');
-    }
 
     this.firstSync = false;
   }
@@ -515,122 +475,6 @@ export class Control4Platform implements DynamicPlatformPlugin {
       }
       this.log.info(`Control4: camera "${cam.name}" (channel ${channel}) added.`);
     }
-  }
-
-  /** One-shot diagnostic: dump an item's Director data so we can see where things like
-   *  camera stream URLs live. Searches all items (not just the exposed ones). */
-  private async probeItem(name: string, items: C4Item[]): Promise<void> {
-    const key = name.toLowerCase();
-    const item = /^\d+$/.test(name)
-      ? items.find((it) => it.id === Number(name))
-      : items.find((it) => String(it.name).toLowerCase() === key
-        || `${it.roomName} ${it.name}`.toLowerCase() === key);
-    if (!item) {
-      this.log.warn(`[probe] "${name}" not found`);
-      return;
-    }
-    this.log.info(`[probe] ${item.proxy} #${item.id} "${item.name}" room="${item.roomName}"`);
-    this.log.info(`[probe] item: ${JSON.stringify(item).slice(0, 1800)}`);
-    const vars = await this.getVariables(item.id).catch(() => []);
-    this.log.info(`[probe] variables: ${JSON.stringify(vars).slice(0, 2500)}`);
-    for (const sub of ['properties', 'bindings', 'network', 'commands']) {
-      const data = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${item.id}/${sub}`))
-        .catch((e: unknown) => ({ error: (e as Error)?.message }));
-      this.log.info(`[probe] ${sub}: ${JSON.stringify(data).slice(0, 1800)}`);
-    }
-
-    // For a room, find the source list + select command that drive HomeKit TV inputs.
-    if (item.proxy === 'roomdevice') {
-      const rid = (item as { roomId?: number }).roomId ?? item.id;
-      const roomPaths = [
-        `/api/v1/locations/rooms/${rid}`,
-        `/api/v1/locations/rooms/${rid}/devices`,
-        `/api/v1/locations/rooms/${rid}/sources`,
-        `/api/v1/locations/rooms/${rid}/video_devices`,
-        `/api/v1/locations/rooms/${rid}/audio_devices`,
-        `/api/v1/locations/rooms/${rid}/deviceswithcapability`,
-      ];
-      for (const p of roomPaths) {
-        const data = await this.withAuth(() => this.director!.rawGet(p)).catch((e: unknown) => ({ error: (e as Error)?.message }));
-        this.log.info(`[probe] ${p}: ${JSON.stringify(data).slice(0, 1400)}`);
-      }
-      const cmds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${item.id}/commands`)).catch(() => []);
-      this.log.info(`[probe] FULL commands: ${JSON.stringify(cmds).slice(0, 4500)}`);
-    }
-
-    // Hunt for the Director-provided, device-agnostic camera stream/snapshot URL.
-    const id = item.id;
-    const candidates = [
-      `/api/v1/items/${id}/snapshot`, `/api/v1/items/${id}/snapshot.jpg`,
-      `/api/v1/items/${id}/mjpeg`, `/api/v1/items/${id}/stream`,
-      `/api/v1/items/${id}/image`, `/api/v1/items/${id}/camera`,
-      `/api/v1/items/${id}/live`, `/api/v1/items/${id}/video`,
-      `/api/v1/cameras`, `/api/v1/cameras/${id}`,
-      `/api/v1/items/${id}/snapshoturl`, `/api/v1/items/${id}/streamurl`,
-    ];
-    for (const p of candidates) {
-      const r = await this.director!.probePath(p).catch((e: unknown) => ({ code: -1, type: '', len: 0, preview: (e as Error)?.message || '' }));
-      if (r.code !== 404 && r.code !== 401) {
-        this.log.info(`[probe] GET ${p} -> ${r.code} ${r.type} len=${r.len}${(r as any).location ? ' loc=' + (r as any).location : ''} ${r.preview.replace(/\s+/g, ' ')}`);
-      }
-    }
-
-    // One-time: the Navigator's per-room source configuration (for TV input filtering).
-    const uic = await this.withAuth(() => this.director!.rawGet('/api/v1/agents/ui_configuration')).catch((e: unknown) => ({ error: (e as Error)?.message }));
-    this.log.info(`[probe] ui_configuration: ${JSON.stringify(uic).slice(0, 2200)}`);
-    for (const ag of ['advanced_lighting', 'zwave_scenes']) {
-      const d = await this.withAuth(() => this.director!.rawGet(`/api/v1/agents/${ag}`)).catch((e: unknown) => ({ error: (e as Error)?.message }));
-      this.log.info(`[probe] agent ${ag}: ${JSON.stringify(d).slice(0, 1900)}`);
-    }
-    const alAgent = items.find((it) => it.proxy === 'control4_agent_adv_lighting');
-    if (alAgent) {
-      const cmds = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${alAgent.id}/commands`)).catch(() => []);
-      this.log.info(`[probe] adv_lighting agent #${alAgent.id} commands: ${JSON.stringify(cmds).slice(0, 2200)}`);
-    }
-
-    // Token-only synchronous proxy commands: the reply may carry the stream/snapshot URL.
-    if (item.proxy === 'camera' || item.proxy === 'camera_v2') {
-      for (const cmd of ['GET_SETUP', 'GET_STREAM_URL', 'GET_SNAPSHOT_URL', 'GET_MJPEG_URL', 'GET_H264_URL', 'GET_URLS', 'GET_CAMERA_INFO', 'GET_PROPERTIES']) {
-        const r = await this.withAuth(() => this.director!.sendCommandSync(id, cmd, {})).catch((e: unknown) => ({ error: (e as Error)?.message }));
-        const s = typeof r === 'string' ? r : JSON.stringify(r);
-        this.log.info(`[probe] SYNC ${cmd} -> ${(s || '').slice(0, 2600)}`);
-      }
-    }
-  }
-
-  /** One-shot diagnostic: toggle a light and log which command model the Director accepts. */
-  private async runControlTest(name: string, chosen: C4Item[]): Promise<void> {
-    const key = name.toLowerCase();
-    const item = chosen.find((it) => String(it.name).toLowerCase() === key);
-    if (!item) {
-      this.log.warn(`[control test] "${name}" not found. Available: ${chosen.map((c) => c.name).join(', ')}`);
-      return;
-    }
-    const vars = await this.getVariables(item.id).catch(() => []);
-    this.log.info(`[control test] "${item.name}" #${item.id} variables: ${JSON.stringify(vars.slice(0, 10))}`);
-
-    const tryCmd = async (command: string, params: Record<string, unknown>): Promise<boolean> => {
-      try {
-        await this.withAuth(() => this.director!.sendCommand(item.id, command, params));
-        this.log.info(`[control test]   OK  ${command} ${JSON.stringify(params)}`);
-        return true;
-      } catch (e) {
-        this.log.warn(`[control test]   FAIL ${command}: ${(e as Error)?.message || e}`);
-        return false;
-      }
-    };
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-    this.log.info(`[control test] turning "${item.name}" OFF ...`);
-    if (!(await tryCmd('OFF', {}))) {
-      await tryCmd('SET_LEVEL', { LEVEL: 0, TIME: 0 });
-    }
-    await sleep(2500);
-    this.log.info(`[control test] turning "${item.name}" ON ...`);
-    if (!(await tryCmd('ON', {}))) {
-      await tryCmd('SET_LEVEL', { LEVEL: 100, TIME: 0 });
-    }
-    this.log.info('[control test] done — check whether the light physically responded.');
   }
 
   private async poll(): Promise<void> {

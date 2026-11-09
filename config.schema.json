@@ -67,6 +67,31 @@
         "type": "boolean",
         "default": true,
         "description": "Expose Control4 cameras as HomeKit cameras."
+      },
+      "secureVideo": {
+        "title": "HomeKit Secure Video",
+        "type": "boolean",
+        "default": true,
+        "description": "Motion-triggered recording on the cameras (requires iCloud+ with HomeKit Secure Video and a home hub)."
+      },
+      "volumeSliders": {
+        "title": "Volume Slider Tiles",
+        "type": "boolean",
+        "default": true,
+        "description": "Add a HomeKit volume-slider tile per room with a TV."
+      },
+      "exposeScenes": {
+        "title": "Expose Lighting Scenes",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose Control4 Advanced Lighting scenes as HomeKit switches."
+      },
+      "dimRampMs": {
+        "title": "Dimming Ramp (ms)",
+        "type": "integer",
+        "default": 1000,
+        "minimum": 0,
+        "description": "Fade time for dimmable lights, for smooth dimming. 0 = instant."
       }
     },
     "required": ["name", "username", "password"]

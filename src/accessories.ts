@@ -195,11 +195,22 @@ export class LightAccessory extends C4Accessory {
     return this.cachedOn;
   }
 
+  /** Dimmer fade time in ms (configurable; default 1000 for smooth dimming, 0 = instant). */
+  private rampMs(): number {
+    const v = (this.platform.config as { dimRampMs?: number }).dimRampMs;
+    return v === undefined ? 1000 : Math.max(0, Math.round(v));
+  }
+
   private async setOn(value: CharacteristicValue): Promise<void> {
     const on = value as boolean;
-    // ON/OFF are accepted by light_v2; fall back to a level set for relays that lack them.
-    await this.platform.sendCommand(this.id, on ? 'ON' : 'OFF', {})
-      .catch(() => this.platform.sendCommand(this.id, 'SET_LEVEL', { LEVEL: on ? this.lastLevel : 0, TIME: 0 }));
+    if (this.isDimmer) {
+      // Ramp to level so on/off fades smoothly; fall back to ON/OFF if the driver refuses.
+      await this.platform.sendCommand(this.id, 'SET_LEVEL', { LEVEL: on ? this.lastLevel : 0, TIME: this.rampMs() })
+        .catch(() => this.platform.sendCommand(this.id, on ? 'ON' : 'OFF', {}));
+    } else {
+      await this.platform.sendCommand(this.id, on ? 'ON' : 'OFF', {})
+        .catch(() => this.platform.sendCommand(this.id, 'SET_LEVEL', { LEVEL: on ? 100 : 0, TIME: 0 }));
+    }
     this.cachedOn = on;
     this.cachedLevel = on ? this.lastLevel : 0;
   }
@@ -214,9 +225,9 @@ export class LightAccessory extends C4Accessory {
     if (lvl > 0) {
       this.lastLevel = lvl;
     }
-    // light_v2 takes SET_LEVEL { LEVEL, TIME(ms) }; TIME 0 = instant.
-    await this.platform.sendCommand(this.id, 'SET_LEVEL', { LEVEL: lvl, TIME: 0 })
-      .catch(() => this.platform.sendCommand(this.id, 'RAMP_TO_LEVEL', { LEVEL: lvl, TIME: 0 }));
+    // light_v2 takes SET_LEVEL { LEVEL, TIME(ms) }; a non-zero TIME gives a smooth fade.
+    await this.platform.sendCommand(this.id, 'SET_LEVEL', { LEVEL: lvl, TIME: this.rampMs() })
+      .catch(() => this.platform.sendCommand(this.id, 'RAMP_TO_LEVEL', { LEVEL: lvl, TIME: this.rampMs() }));
   }
 }
 
