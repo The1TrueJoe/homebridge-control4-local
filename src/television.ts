@@ -177,3 +177,66 @@ export class RoomTelevision {
     }
   }
 }
+
+/**
+ * A room's volume as a HomeKit slider tile (a Lightbulb: brightness = volume %, on = unmuted).
+ * This gives an on-screen volume control in addition to the Television's Control Center remote.
+ */
+export class RoomVolume {
+  private readonly service: Service;
+  private readonly roomId: number;
+  private cachedVolume = 0;
+  private cachedOn = true;
+
+  constructor(
+    private readonly platform: Control4Platform,
+    public readonly accessory: PlatformAccessory,
+    room: C4Item,
+  ) {
+    this.roomId = room.id;
+    const C = platform.Characteristic;
+    const S = platform.Service;
+    (accessory.getService(S.AccessoryInformation) || accessory.addService(S.AccessoryInformation))
+      .setCharacteristic(C.Manufacturer, 'Control4')
+      .setCharacteristic(C.Model, 'Control4 Room Volume')
+      .setCharacteristic(C.SerialNumber, `c4-vol-${room.id}`);
+
+    this.service = accessory.getService(S.Lightbulb) || accessory.addService(S.Lightbulb, `${room.name} Volume`);
+    this.service.setCharacteristic(C.Name, `${room.name} Volume`);
+    this.service.getCharacteristic(C.On)
+      .onGet(() => this.cachedOn)
+      .onSet((v) => this.setMuted(!v));
+    this.service.getCharacteristic(C.Brightness)
+      .onGet(() => this.cachedVolume)
+      .onSet((v) => this.setVolume(Number(v)));
+  }
+
+  async refresh(): Promise<void> {
+    const vars = await this.platform.getVariables(this.roomId).catch(() => []);
+    const m: Record<string, unknown> = {};
+    for (const v of vars) {
+      m[v.name] = v.value;
+    }
+    const C = this.platform.Characteristic;
+    if (m.CURRENT_VOLUME !== undefined) {
+      this.cachedVolume = Math.max(0, Math.min(100, Math.round(Number(m.CURRENT_VOLUME))));
+      this.service.updateCharacteristic(C.Brightness, this.cachedVolume);
+    }
+    if (m.IS_MUTED !== undefined) {
+      this.cachedOn = !(Number(m.IS_MUTED) > 0);
+      this.service.updateCharacteristic(C.On, this.cachedOn);
+    }
+  }
+
+  private async setVolume(level: number): Promise<void> {
+    const l = Math.max(0, Math.min(100, Math.round(level)));
+    await this.platform.sendCommand(this.roomId, 'SET_VOLUME_LEVEL', { LEVEL: l });
+    this.cachedVolume = l;
+    this.cachedOn = true;
+  }
+
+  private async setMuted(muted: boolean): Promise<void> {
+    await this.platform.sendCommand(this.roomId, muted ? 'MUTE_ON' : 'MUTE_OFF', {});
+    this.cachedOn = !muted;
+  }
+}

@@ -102,6 +102,38 @@ export class LightAccessory extends C4Accessory {
         .onGet(() => this.getBrightness())
         .onSet((v) => this.setBrightness(v));
     }
+
+    void this.initColor();
+  }
+
+  /** Wire colour-temperature + Adaptive Lighting for lights that report CCT support. */
+  private async initColor(): Promise<void> {
+    try {
+      const vars = await this.variables();
+      const ndc = vars['Navigator Dynamic Capabilities'] as { DynamicCapabilities?: Record<string, unknown> } | undefined;
+      const caps = (ndc && ndc.DynamicCapabilities) || (ndc as Record<string, unknown> | undefined);
+      if (!caps || caps['supports_color_correlated_temperature'] !== true) {
+        return;
+      }
+      const kMin = Number(caps['color_correlated_temperature_min']) || 2700;
+      const kMax = Number(caps['color_correlated_temperature_max']) || 6500;
+      this.minMired = Math.round(1e6 / kMax);
+      this.maxMired = Math.round(1e6 / kMin);
+      const C = this.platform.Characteristic;
+      const ct = this.service.getCharacteristic(C.ColorTemperature);
+      ct.setProps({ minValue: this.minMired, maxValue: this.maxMired });
+      ct.onGet(() => this.cachedMired).onSet((v) => this.setColorTemp(Number(v)));
+      this.cctWired = true;
+
+      // Adaptive Lighting: HomeKit shifts colour temperature across the day automatically.
+      const hap = this.platform.api.hap as unknown as { AdaptiveLightingController?: new (s: Service) => unknown };
+      if (hap.AdaptiveLightingController) {
+        const controller = new hap.AdaptiveLightingController(this.service);
+        (this.accessory as unknown as { configureController: (c: unknown) => void }).configureController(controller);
+      }
+    } catch {
+      /* capabilities unavailable / AL unsupported — leave the light as on/off+brightness */
+    }
   }
 
   private cachedLevel = 0;
@@ -133,31 +165,17 @@ export class LightAccessory extends C4Accessory {
     this.applyColorCapability(vars);
   }
 
-  /** Add/refresh a HomeKit colour-temperature control for lights that report CCT support. */
+  /** Update the colour-temperature value from the light's current xy colour. */
   private applyColorCapability(vars: Record<string, unknown>): void {
-    const ndc = vars['Navigator Dynamic Capabilities'] as { DynamicCapabilities?: Record<string, unknown> } | undefined;
-    const caps = (ndc && ndc.DynamicCapabilities) || (ndc as Record<string, unknown> | undefined);
-    const C = this.platform.Characteristic;
-
-    if (caps && caps['supports_color_correlated_temperature'] === true && !this.cctWired) {
-      const kMin = Number(caps['color_correlated_temperature_min']) || 2700;
-      const kMax = Number(caps['color_correlated_temperature_max']) || 6500;
-      this.minMired = Math.round(1e6 / kMax); // coolest
-      this.maxMired = Math.round(1e6 / kMin); // warmest
-      const ct = this.service.getCharacteristic(C.ColorTemperature);
-      ct.setProps({ minValue: this.minMired, maxValue: this.maxMired });
-      ct.onGet(() => this.cachedMired).onSet((v) => this.setColorTemp(Number(v)));
-      this.cctWired = true;
+    if (!this.cctWired) {
+      return;
     }
-
-    if (this.cctWired) {
-      const x = this.pick(vars, ['LIGHT_COLOR_CURRENT_X', 'Color X']);
-      const y = this.pick(vars, ['LIGHT_COLOR_CURRENT_Y', 'Color Y']);
-      if (x !== undefined && y !== undefined) {
-        const mired = Math.round(1e6 / xyToKelvin(Number(x), Number(y)));
-        this.cachedMired = Math.max(this.minMired, Math.min(this.maxMired, mired));
-        this.service.updateCharacteristic(C.ColorTemperature, this.cachedMired);
-      }
+    const x = this.pick(vars, ['LIGHT_COLOR_CURRENT_X', 'Color X']);
+    const y = this.pick(vars, ['LIGHT_COLOR_CURRENT_Y', 'Color Y']);
+    if (x !== undefined && y !== undefined) {
+      const mired = Math.round(1e6 / xyToKelvin(Number(x), Number(y)));
+      this.cachedMired = Math.max(this.minMired, Math.min(this.maxMired, mired));
+      this.service.updateCharacteristic(this.platform.Characteristic.ColorTemperature, this.cachedMired);
     }
   }
 

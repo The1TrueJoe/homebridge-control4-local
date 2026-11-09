@@ -6,7 +6,7 @@ import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { Control4Account } from './control4/account';
 import { Control4Director, C4Item, C4Variable, UnauthorizedError } from './control4/director';
 import { C4Accessory, LightAccessory, LockAccessory } from './accessories';
-import { RoomTelevision, RoomSource } from './television';
+import { RoomTelevision, RoomVolume, RoomSource } from './television';
 import { resolveCamera } from './cameraResolver';
 import { C4CameraDelegate, attachCameraController } from './camera';
 
@@ -23,6 +23,8 @@ export interface Control4Config extends PlatformConfig {
   exposeCameras?: boolean;
   /** Minutes between automatic re-discoveries, so adds/removes/renames sync live (default 10). */
   rediscoverMinutes?: number;
+  /** Add a HomeKit volume-slider tile per room with a TV (default true). */
+  volumeSliders?: boolean;
   /** Diagnostic: on startup, toggle this device once and log the command model that works. */
   controlTest?: string;
   /** Diagnostic: dump this item's detail/variables/properties/bindings to the log. */
@@ -46,6 +48,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
   private readonly cached: PlatformAccessory[] = [];
   private readonly handlers = new Map<string, C4Accessory>();
   private readonly televisions: RoomTelevision[] = [];
+  private readonly volumeHandlers: RoomVolume[] = [];
   private readonly cameraUuidsWithController = new Set<string>();
   private readonly tvByRoom = new Map<number, PlatformAccessory>();
   private firstSync = true;
@@ -224,6 +227,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
 
     await this.discoverCameras(items, activeUuids);
+    await this.discoverTelevisions(items, activeUuids);
 
     // Drop bridged accessories that no longer exist in the project (deleted in Control4).
     const stale = this.cached.filter((a) => !activeUuids.has(a.UUID));
@@ -240,7 +244,6 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
 
     this.log.info(`Control4: ${chosen.length} bridged device(s) (from ${items.length} items).`);
-    await this.discoverTelevisions(items);
     await this.poll();
 
     if (this.firstSync && this.config.controlTest) {
@@ -284,7 +287,7 @@ export class Control4Platform implements DynamicPlatformPlugin {
 
   /** Expose each room that has a TV as a HomeKit Television (external accessory). The ROOM
    *  holds the state (power/input/volume), so this works for IR- and IP-controlled TVs alike. */
-  private async discoverTelevisions(items: C4Item[]): Promise<void> {
+  private async discoverTelevisions(items: C4Item[], activeUuids: Set<string>): Promise<void> {
     if (this.config.exposeTvs === false) {
       return;
     }
@@ -311,8 +314,24 @@ export class Control4Platform implements DynamicPlatformPlugin {
     const toPublish: PlatformAccessory[] = [];
     for (const room of rooms) {
       const rid = roomIdOf(room) || room.id;
+
+      // A bridged volume-slider tile per TV room (persistent; keep its uuid active each sync).
+      if (this.config.volumeSliders !== false) {
+        const vUuid = this.api.hap.uuid.generate(`c4:room-vol:${room.id}`);
+        activeUuids.add(vUuid);
+        let vAcc = this.cached.find((a) => a.UUID === vUuid);
+        if (!vAcc) {
+          vAcc = new this.api.platformAccessory(`${room.name} Volume`, vUuid);
+          this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [vAcc]);
+          this.cached.push(vAcc);
+        }
+        if (!this.volumeHandlers.some((h) => h.accessory.UUID === vUuid)) {
+          this.volumeHandlers.push(new RoomVolume(this, vAcc, room));
+        }
+      }
+
       if (this.tvByRoom.has(rid)) {
-        continue; // already published; input/room changes take effect on next restart
+        continue; // TV already published; input/room changes take effect on next restart
       }
 
       // Inputs = only the sources the Navigator shows for this room (its watch list). Fall back to
@@ -550,6 +569,9 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
     for (const tv of this.televisions) {
       await tv.refresh().catch((e) => this.log.debug('tv refresh error:', e?.message || e));
+    }
+    for (const vol of this.volumeHandlers) {
+      await vol.refresh().catch((e) => this.log.debug('volume refresh error:', e?.message || e));
     }
   }
 }
