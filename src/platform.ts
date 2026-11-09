@@ -10,7 +10,6 @@ import { RoomTelevision, RoomVolume, RoomSource } from './television';
 import { resolveCamera } from './cameraResolver';
 import { C4CameraDelegate, attachCameraController } from './camera';
 import { C4RecordingDelegate } from './cameraRecording';
-import { DvrMotionHub } from './dvrMotion';
 import { SceneSwitch } from './scenes';
 
 export interface Control4Config extends PlatformConfig {
@@ -58,7 +57,6 @@ export class Control4Platform implements DynamicPlatformPlugin {
   private readonly sceneHandlers: SceneSwitch[] = [];
   private advLightingAgentId?: number;
   private readonly cameraUuidsWithController = new Set<string>();
-  private readonly dvrMotionHubs = new Map<string, DvrMotionHub>();
   private readonly tvByRoom = new Map<number, PlatformAccessory>();
   private firstSync = true;
   private rediscoverTimer?: NodeJS.Timeout;
@@ -86,9 +84,6 @@ export class Control4Platform implements DynamicPlatformPlugin {
       }
       if (this.rediscoverTimer) {
         clearInterval(this.rediscoverTimer);
-      }
-      for (const hub of this.dvrMotionHubs.values()) {
-        hub.stop();
       }
     });
   }
@@ -471,19 +466,8 @@ export class Control4Platform implements DynamicPlatformPlugin {
         delegate.controller = controller;
         (recording as unknown as { controller: unknown }).controller = controller;
         accessory.configureController(controller);
-
-        // Motion comes from the DVR's own detection (one shared stream per DVR), not ffmpeg.
-        const motionService = (controller as unknown as { motionService?: Service }).motionService;
-        if (motionService && resolved.host) {
-          let hub = this.dvrMotionHubs.get(resolved.host);
-          if (!hub) {
-            hub = new DvrMotionHub(resolved.host, resolved.httpPort ?? 80, resolved.useHttps ?? false,
-              resolved.username ?? '', resolved.password ?? '', this.log);
-            this.dvrMotionHubs.set(resolved.host, hub);
-            hub.start();
-          }
-          hub.register(resolved.channel ?? 1, (active) => motionService.updateCharacteristic(this.Characteristic.MotionDetected, active));
-        }
+        // Motion trigger is driven by a linked Control4 motion sensor (see linkCameraMotion),
+        // so the plugin stays device-agnostic — no DVR/vendor-specific code here.
       }
       this.cameraUuidsWithController.add(uuid);
       if (!existing) {
