@@ -39,6 +39,15 @@ export interface ResolvedCamera {
    * false -> rtspUrl is H.264 and can be passed through with `-c:v copy`.
    */
   needsTranscode: boolean;
+
+  /** Raw DVR connection details (for subscribing to the DVR's native motion events). */
+  host?: string;
+  httpPort?: number;
+  useHttps?: boolean;
+  username?: string;
+  password?: string;
+  /** 1-based DVR channel for this camera. */
+  channel?: number;
 }
 
 /** Subset of the `camera_properties` object returned by GET_PROPERTIES. */
@@ -159,6 +168,12 @@ export async function resolveCamera(
     snapshotUrl,
     mjpegUrl: undefined,
     needsTranscode,
+    host,
+    httpPort,
+    useHttps,
+    username,
+    password,
+    channel,
   };
 }
 
