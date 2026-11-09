@@ -7,6 +7,8 @@ import { Control4Account } from './control4/account';
 import { Control4Director, C4Item, C4Variable, UnauthorizedError } from './control4/director';
 import { C4Accessory, LightAccessory, LockAccessory } from './accessories';
 import { RoomTelevision, RoomSource } from './television';
+import { resolveCamera } from './cameraResolver';
+import { C4CameraDelegate, attachCameraController } from './camera';
 
 export interface Control4Config extends PlatformConfig {
   username?: string;
@@ -17,6 +19,8 @@ export interface Control4Config extends PlatformConfig {
   excludeRooms?: string[];
   /** Expose each room that has a TV as a HomeKit Television (default true). */
   exposeTvs?: boolean;
+  /** Expose Control4 cameras as HomeKit cameras (default true). */
+  exposeCameras?: boolean;
   /** Diagnostic: on startup, toggle this device once and log the command model that works. */
   controlTest?: string;
   /** Diagnostic: dump this item's detail/variables/properties/bindings to the log. */
@@ -194,6 +198,8 @@ export class Control4Platform implements DynamicPlatformPlugin {
       this.handlers.set(uuid, new Handler(this, accessory, it));
     }
 
+    await this.discoverCameras(items, activeUuids);
+
     // Drop accessories that no longer exist in the project.
     const stale = this.cached.filter((a) => !activeUuids.has(a.UUID));
     if (stale.length) {
@@ -267,6 +273,58 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
     if (toPublish.length) {
       this.api.publishExternalAccessories(PLUGIN_NAME, toPublish);
+    }
+  }
+
+  /** Expose Control4 cameras as HomeKit cameras. Stream/snapshot URLs are resolved
+   *  token-only (GET_PROPERTIES → DVR address/creds); no DVR login needed. */
+  private async discoverCameras(items: C4Item[], activeUuids: Set<string>): Promise<void> {
+    if (this.config.exposeCameras === false) {
+      return;
+    }
+    const cams = items.filter((it) => it.proxy === 'camera' || it.proxy === 'camera_v2');
+    const camIds = new Set(cams.map((c) => c.id));
+    const parents = new Set<number>();
+    for (const c of cams) {
+      const p = Number(c.parentId);
+      if (camIds.has(p)) {
+        parents.add(p); // this camera's parent is itself a camera → the parent is the DVR wrapper
+      }
+    }
+    const leaves = cams.filter((c) => !parents.has(c.id));
+
+    for (const cam of leaves) {
+      const props = await this.withAuth(() => this.director!.rawGet(`/api/v1/items/${cam.id}/properties`)).catch(() => []);
+      const list = Array.isArray(props) ? (props as Array<{ name?: string; value?: unknown }>) : [];
+      const channel = Number(list.find((p) => p.name === 'Camera Number')?.value ?? 1);
+
+      let resolved;
+      try {
+        resolved = await this.withAuth(() => resolveCamera(this.director!, cam, channel));
+      } catch (e) {
+        this.log.warn(`Control4: camera "${cam.name}" could not be resolved: ${(e as Error)?.message || e}`);
+        continue;
+      }
+
+      const uuid = this.api.hap.uuid.generate(`c4:cam:${cam.id}`);
+      activeUuids.add(uuid);
+      let accessory = this.cached.find((a) => a.UUID === uuid);
+      const isNew = !accessory;
+      if (!accessory) {
+        accessory = new this.api.platformAccessory(cam.name, uuid);
+        accessory.category = this.api.hap.Categories.CAMERA;
+      }
+      (accessory.getService(this.Service.AccessoryInformation) || accessory.addService(this.Service.AccessoryInformation))
+        .setCharacteristic(this.Characteristic.Manufacturer, 'Control4')
+        .setCharacteristic(this.Characteristic.Model, 'Control4 Camera')
+        .setCharacteristic(this.Characteristic.SerialNumber, `c4-cam-${cam.id}`);
+
+      const delegate = new C4CameraDelegate({ hap: this.api.hap, log: this.log, displayName: cam.name, resolved });
+      attachCameraController(this.api, accessory, delegate);
+      if (isNew) {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      }
+      this.log.info(`Control4: camera "${cam.name}" (channel ${channel}) added.`);
     }
   }
 
