@@ -98,6 +98,12 @@
         "default": true,
         "description": "Expose Control4 contact/motion sensors as HomeKit motion sensors. A sensor named the same as a camera also triggers that camera's HomeKit Secure Video recording."
       },
+      "exposeThermostats": {
+        "title": "Expose Thermostats",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose Control4 thermostats as HomeKit thermostats (temperature, heat/cool setpoints, mode, humidity)."
+      },
       "dimRampMs": {
         "title": "Dimming Ramp (ms)",
         "type": "integer",

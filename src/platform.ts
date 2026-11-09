@@ -6,6 +6,7 @@ import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { Control4Account } from './control4/account';
 import { Control4Director, C4Item, C4Variable, UnauthorizedError } from './control4/director';
 import { C4Accessory, LightAccessory, LockAccessory } from './accessories';
+import { ThermostatAccessory } from './thermostat';
 import { RoomTelevision, RoomVolume, RoomSource } from './television';
 import { resolveCamera } from './cameraResolver';
 import { C4CameraDelegate, attachCameraController } from './camera';
@@ -37,6 +38,8 @@ export interface Control4Config extends PlatformConfig {
   exposeScenes?: boolean;
   /** Expose Control4 contact/motion sensors as HomeKit motion sensors (default true). */
   exposeSensors?: boolean;
+  /** Expose Control4 thermostats as HomeKit thermostats (default true). */
+  exposeThermostats?: boolean;
   /** Milliseconds for smooth dimming ramps (default 1000; 0 = instant). */
   dimRampMs?: number;
 }
@@ -47,6 +50,8 @@ const HANDLERS: Record<string, new (p: Control4Platform, a: PlatformAccessory, i
   light_v2: LightAccessory,
   relaysingle_doorlock_c4: LockAccessory,
   ExtraVeg_ZWave_DoorLock: LockAccessory,
+  thermostatV2: ThermostatAccessory,
+  thermostat: ThermostatAccessory,
 };
 
 export class Control4Platform implements DynamicPlatformPlugin {
@@ -199,9 +204,11 @@ export class Control4Platform implements DynamicPlatformPlugin {
     }
     const lightLoads = lights.filter((it) => !wrappers.has(it.id));
 
-    // Everything else we have a handler for (locks, …).
+    // Everything else we have a handler for (locks, thermostats, …).
+    const exposeThermostats = this.config.exposeThermostats !== false;
     const others = items.filter((it) =>
-      it.proxy && HANDLERS[String(it.proxy)] && it.proxy !== 'light' && it.proxy !== 'light_v2');
+      it.proxy && HANDLERS[String(it.proxy)] && it.proxy !== 'light' && it.proxy !== 'light_v2'
+      && (exposeThermostats || (it.proxy !== 'thermostatV2' && it.proxy !== 'thermostat')));
 
     let chosen = [...lightLoads, ...others]
       .filter((it) => !exclude.has(String(it.roomName || '').toLowerCase()));
