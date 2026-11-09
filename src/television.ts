@@ -78,7 +78,8 @@ export class RoomTelevision {
     this.speaker = accessory.getService(S.TelevisionSpeaker) || accessory.addService(S.TelevisionSpeaker);
     this.speaker
       .setCharacteristic(C.Active, C.Active.ACTIVE)
-      .setCharacteristic(C.VolumeControlType, C.VolumeControlType.ABSOLUTE);
+      // RELATIVE_WITH_CURRENT makes the Control Center remote's volume buttons drive the room.
+      .setCharacteristic(C.VolumeControlType, C.VolumeControlType.RELATIVE_WITH_CURRENT);
     this.speaker.getCharacteristic(C.VolumeSelector).onSet((v) => this.volumeStep(Number(v)));
     this.speaker.getCharacteristic(C.Mute)
       .onGet(() => this.cachedMuted)

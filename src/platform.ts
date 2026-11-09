@@ -293,7 +293,19 @@ export class Control4Platform implements DynamicPlatformPlugin {
     const rooms = items.filter((it) => it.proxy === 'roomdevice' && tvRoomIds.has(roomIdOf(it)));
     const desiredRoomIds = new Set(rooms.map((r) => roomIdOf(r) || r.id));
 
-    // Source proxies that can be a room's "watch" input.
+    // The Navigator's per-room ENABLED "watch" sources (authoritative), keyed by room id.
+    const uic = await this.withAuth(() => this.director!.rawGet('/api/v1/agents/ui_configuration')).catch(() => ({}));
+    const experiences = (uic as { experiences?: Array<{ type?: string; room_id?: number; sources?: { source?: Array<{ id?: number }> } }> }).experiences || [];
+    const watchByRoom = new Map<number, number[]>();
+    for (const exp of experiences) {
+      if (exp?.type === 'watch') {
+        const ids = (exp.sources?.source || [])
+          .map((s) => Number(s.id))
+          .filter((n) => Number.isFinite(n) && n > 0 && n < 1e9);
+        watchByRoom.set(Number(exp.room_id), ids);
+      }
+    }
+    const itemsById = new Map(items.map((it) => [it.id, it] as const));
     const srcProxies = new Set(['media_player', 'dvd', 'tuner', 'avswitch', 'receiver', 'tv', 'cable']);
 
     const toPublish: PlatformAccessory[] = [];
@@ -303,17 +315,18 @@ export class Control4Platform implements DynamicPlatformPlugin {
         continue; // already published; input/room changes take effect on next restart
       }
 
-      // Inputs = the room's Control4 sources: prefer its video_devices list, else the AV source
-      // devices located in the room. HomeKit rejects a Television with no inputs, so always keep ≥1.
+      // Inputs = only the sources the Navigator shows for this room (its watch list). Fall back to
+      // the room's video_devices / local AV devices if the Navigator config doesn't cover it.
       let inputs: RoomSource[] = [];
-      const vd = await this.withAuth(() => this.director!.rawGet(`/api/v1/locations/rooms/${rid}/video_devices`)).catch(() => ({}));
-      const vis = (vd as { visible?: Array<{ id: number; name: string }> }).visible || [];
-      if (vis.length) {
-        inputs = vis.map((x) => ({ id: x.id, name: x.name }));
+      const watchIds = watchByRoom.get(rid) || [];
+      if (watchIds.length) {
+        inputs = watchIds.map((id) => ({ id, name: itemsById.get(id)?.name || `Source ${id}` }));
       } else {
-        inputs = items
-          .filter((it) => srcProxies.has(String(it.proxy)) && roomIdOf(it) === rid && it.id !== room.id)
-          .map((it) => ({ id: it.id, name: it.name }));
+        const vd = await this.withAuth(() => this.director!.rawGet(`/api/v1/locations/rooms/${rid}/video_devices`)).catch(() => ({}));
+        const vis = (vd as { visible?: Array<{ id: number; name: string }> }).visible || [];
+        inputs = vis.length
+          ? vis.map((x) => ({ id: x.id, name: x.name }))
+          : items.filter((it) => srcProxies.has(String(it.proxy)) && roomIdOf(it) === rid && it.id !== room.id).map((it) => ({ id: it.id, name: it.name }));
       }
 
       // If the room is linked to an on-screen navigator (OSD), expose "Control4" as a source.
@@ -481,6 +494,10 @@ export class Control4Platform implements DynamicPlatformPlugin {
         this.log.info(`[probe] GET ${p} -> ${r.code} ${r.type} len=${r.len}${(r as any).location ? ' loc=' + (r as any).location : ''} ${r.preview.replace(/\s+/g, ' ')}`);
       }
     }
+
+    // One-time: the Navigator's per-room source configuration (for TV input filtering).
+    const uic = await this.withAuth(() => this.director!.rawGet('/api/v1/agents/ui_configuration')).catch((e: unknown) => ({ error: (e as Error)?.message }));
+    this.log.info(`[probe] ui_configuration: ${JSON.stringify(uic).slice(0, 2200)}`);
 
     // Token-only synchronous proxy commands: the reply may carry the stream/snapshot URL.
     if (item.proxy === 'camera' || item.proxy === 'camera_v2') {

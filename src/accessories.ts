@@ -2,6 +2,25 @@ import { PlatformAccessory, Service, CharacteristicValue } from 'homebridge';
 import { Control4Platform } from './platform';
 import { C4Item } from './control4/director';
 
+// Control4 light_v2 expresses colour as CIE xy chromaticity; CCT is an xy point on the
+// Planckian locus. These port the conversions our control4-tuya driver uses.
+function kelvinToXy(k: number): [number, number] {
+  k = Math.max(1667, Math.min(25000, k));
+  const x = k <= 4000
+    ? -0.2661239e9 / k ** 3 - 0.2343589e6 / k ** 2 + 0.8776956e3 / k + 0.179910
+    : -3.0258469e9 / k ** 3 + 2.1070379e6 / k ** 2 + 0.2226347e3 / k + 0.240390;
+  const y = k <= 2222
+    ? -1.1063814 * x ** 3 - 1.34811020 * x ** 2 + 2.18555832 * x - 0.20219683
+    : k <= 4000
+      ? -0.9549476 * x ** 3 - 1.37418593 * x ** 2 + 2.09137015 * x - 0.16748867
+      : 3.0817580 * x ** 3 - 5.87338670 * x ** 2 + 3.75112997 * x - 0.37001483;
+  return [x, y];
+}
+function xyToKelvin(x: number, y: number): number {
+  const n = (x - 0.3320) / (0.1858 - y);
+  return 449 * n ** 3 + 3525 * n ** 2 + 6823.3 * n + 5520.33;
+}
+
 /**
  * One HomeKit accessory bound to one Control4 item. Subclasses wire specific
  * characteristics. Reads go through the platform (which refreshes the token on a
@@ -87,6 +106,10 @@ export class LightAccessory extends C4Accessory {
 
   private cachedLevel = 0;
   private cachedOn = false;
+  private cctWired = false;
+  private minMired = 153;
+  private maxMired = 500;
+  private cachedMired = 250;
 
   async refresh(): Promise<void> {
     const vars = await this.variables();
@@ -106,6 +129,48 @@ export class LightAccessory extends C4Accessory {
     }
     this.cachedOn = rawState !== undefined ? Number(rawState) > 0 : this.cachedLevel > 0;
     this.service.updateCharacteristic(this.platform.Characteristic.On, this.cachedOn);
+
+    this.applyColorCapability(vars);
+  }
+
+  /** Add/refresh a HomeKit colour-temperature control for lights that report CCT support. */
+  private applyColorCapability(vars: Record<string, unknown>): void {
+    const ndc = vars['Navigator Dynamic Capabilities'] as { DynamicCapabilities?: Record<string, unknown> } | undefined;
+    const caps = (ndc && ndc.DynamicCapabilities) || (ndc as Record<string, unknown> | undefined);
+    const C = this.platform.Characteristic;
+
+    if (caps && caps['supports_color_correlated_temperature'] === true && !this.cctWired) {
+      const kMin = Number(caps['color_correlated_temperature_min']) || 2700;
+      const kMax = Number(caps['color_correlated_temperature_max']) || 6500;
+      this.minMired = Math.round(1e6 / kMax); // coolest
+      this.maxMired = Math.round(1e6 / kMin); // warmest
+      const ct = this.service.getCharacteristic(C.ColorTemperature);
+      ct.setProps({ minValue: this.minMired, maxValue: this.maxMired });
+      ct.onGet(() => this.cachedMired).onSet((v) => this.setColorTemp(Number(v)));
+      this.cctWired = true;
+    }
+
+    if (this.cctWired) {
+      const x = this.pick(vars, ['LIGHT_COLOR_CURRENT_X', 'Color X']);
+      const y = this.pick(vars, ['LIGHT_COLOR_CURRENT_Y', 'Color Y']);
+      if (x !== undefined && y !== undefined) {
+        const mired = Math.round(1e6 / xyToKelvin(Number(x), Number(y)));
+        this.cachedMired = Math.max(this.minMired, Math.min(this.maxMired, mired));
+        this.service.updateCharacteristic(C.ColorTemperature, this.cachedMired);
+      }
+    }
+  }
+
+  private async setColorTemp(mired: number): Promise<void> {
+    const m = Math.max(this.minMired, Math.min(this.maxMired, Math.round(mired)));
+    const [x, y] = kelvinToXy(1e6 / m);
+    // LIGHT_COLOR_TARGET_MODE 1 = colour-temperature mode (0 = full colour).
+    await this.platform.sendCommand(this.id, 'SET_COLOR_TARGET', {
+      LIGHT_COLOR_TARGET_X: x,
+      LIGHT_COLOR_TARGET_Y: y,
+      LIGHT_COLOR_TARGET_MODE: 1,
+    });
+    this.cachedMired = m;
   }
 
   private getOn(): CharacteristicValue {
